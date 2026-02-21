@@ -20,7 +20,11 @@ from src.providers.base import ProviderAdapter, ProviderFetchResult, empty_unifi
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 GROQ_METRIC_QUERIES = {
-    "calls": ["model_project_id:requests:rate5m", "requests:rate5m"],
+    "calls": [
+        "model_project_id_status_code:requests:rate5m",
+        "model_project_id:requests:rate5m",
+        "requests:rate5m",
+    ],
     "input_tokens": ["model_project_id:tokens_in:rate5m", "tokens_in:rate5m"],
     "output_tokens": ["model_project_id:tokens_out:rate5m", "tokens_out:rate5m"],
 }
@@ -108,6 +112,11 @@ class GroqProviderAdapter(ProviderAdapter):
             notices.append(
                 "Groq returned no metrics rows. Verify metrics entitlement/API access in your Groq org."
             )
+            if any("status=404" in str(msg) for msg in endpoint_errors.values()):
+                notices.append(
+                    "Groq metrics endpoint returned 404. This usually means Prometheus Metrics is not "
+                    "enabled for your org (Enterprise feature) or the metrics base URL is incorrect."
+                )
         else:
             missing_pricing_models = _models_without_pricing(unified_df)
             if missing_pricing_models:
@@ -223,38 +232,57 @@ def _query_range(
     timeout_seconds: int,
     max_retries: int,
 ) -> dict[str, Any]:
-    url = f"{base_url}/api/v1/query_range"
     params = {"query": query, "start": start_time, "end": end_time, "step": step}
+    candidate_urls = _build_query_range_urls(base_url)
+    last_not_found: GroqAPIError | None = None
 
-    for attempt in range(max_retries + 1):
-        try:
-            response = session.get(url, params=params, timeout=timeout_seconds)
-        except requests.RequestException as exc:
-            if attempt == max_retries:
-                raise GroqAPIError(f"Request failed: {exc}") from exc
-            time.sleep(0.5 * (2**attempt))
-            continue
+    for url in candidate_urls:
+        for attempt in range(max_retries + 1):
+            try:
+                response = session.get(url, params=params, timeout=timeout_seconds)
+            except requests.RequestException as exc:
+                if attempt == max_retries:
+                    raise GroqAPIError(f"Request failed: {exc}") from exc
+                time.sleep(0.5 * (2**attempt))
+                continue
 
-        if response.status_code in RETRYABLE_STATUS_CODES and attempt < max_retries:
-            time.sleep(0.5 * (2**attempt))
-            continue
+            if response.status_code in RETRYABLE_STATUS_CODES and attempt < max_retries:
+                time.sleep(0.5 * (2**attempt))
+                continue
 
-        if response.status_code >= 400:
-            raise GroqAPIError(_error_message(response), status_code=response.status_code)
+            if response.status_code == 404:
+                last_not_found = GroqAPIError(_error_message(response), status_code=response.status_code)
+                break
 
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise GroqAPIError("Groq metrics endpoint returned non-JSON response") from exc
+            if response.status_code >= 400:
+                raise GroqAPIError(_error_message(response), status_code=response.status_code)
 
-        if not isinstance(payload, dict):
-            raise GroqAPIError("Unexpected Groq payload: root is not an object")
-        status = payload.get("status")
-        if status != "success":
-            raise GroqAPIError(f"Groq query failed for `{query}`: {payload}")
-        return payload
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise GroqAPIError("Groq metrics endpoint returned non-JSON response") from exc
 
+            if not isinstance(payload, dict):
+                raise GroqAPIError("Unexpected Groq payload: root is not an object")
+            status = payload.get("status")
+            if status != "success":
+                raise GroqAPIError(f"Groq query failed for `{query}`: {payload}")
+            return payload
+
+    if last_not_found is not None:
+        raise last_not_found
     raise GroqAPIError("Request failed after retries")
+
+
+def _build_query_range_urls(base_url: str) -> list[str]:
+    base = base_url.rstrip("/")
+    candidates: list[str] = []
+    if base.endswith("/api/v1"):
+        candidates.append(f"{base}/query_range")
+    else:
+        candidates.append(f"{base}/api/v1/query_range")
+        candidates.append(f"{base}/query_range")
+    return candidates
 
 
 def _prometheus_matrix_to_frame(

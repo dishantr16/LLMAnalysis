@@ -71,16 +71,28 @@ class AnthropicProviderAdapter(ProviderAdapter):
                 notices=["Anthropic key not configured."],
             )
 
-        group_dimensions = _anthropic_group_dimensions(group_by)
-        common_payload = {
+        usage_group_dimensions = _anthropic_usage_group_dimensions(group_by)
+        usage_params = {
             "starting_at": _unix_to_iso8601(start_time),
             "ending_at": _unix_to_iso8601(end_time),
-            "granularity": _anthropic_granularity(bucket_width),
-            "group_by": group_dimensions,
+            "bucket_width": _anthropic_bucket_width(bucket_width),
+            "group_by[]": usage_group_dimensions,
+            "limit": _anthropic_limit(bucket_width),
+        }
+        cost_params = {
+            "starting_at": _unix_to_iso8601(start_time),
+            "ending_at": _unix_to_iso8601(end_time),
+            "bucket_width": "1d",
+            "group_by[]": ["workspace_id", "description"],
+            "limit": 31,
         }
 
         endpoint_errors: dict[str, str] = {}
         notices: list[str] = []
+        if bucket_width == "1h":
+            notices.append(
+                "Anthropic cost report only supports daily buckets (`1d`); hourly selection applies to usage only."
+            )
 
         usage_rows: list[dict[str, Any]] = []
         cost_rows: list[dict[str, Any]] = []
@@ -95,11 +107,11 @@ class AnthropicProviderAdapter(ProviderAdapter):
             )
 
             try:
-                usage_rows = _post_paginated(
+                usage_rows = _get_paginated(
                     session=session,
                     base_url=self.base_url,
                     path=ANTHROPIC_USAGE_REPORT_MESSAGES_ENDPOINT,
-                    payload=common_payload,
+                    params=usage_params,
                     timeout_seconds=self.timeout_seconds,
                     max_retries=self.max_retries,
                 )
@@ -107,11 +119,11 @@ class AnthropicProviderAdapter(ProviderAdapter):
                 endpoint_errors["usage_report_messages"] = str(exc)
 
             try:
-                cost_rows = _post_paginated(
+                cost_rows = _get_paginated(
                     session=session,
                     base_url=self.base_url,
                     path=ANTHROPIC_COST_REPORT_ENDPOINT,
-                    payload=common_payload,
+                    params=cost_params,
                     timeout_seconds=self.timeout_seconds,
                     max_retries=self.max_retries,
                 )
@@ -245,7 +257,7 @@ def build_anthropic_cost_df(rows: list[dict[str, Any]]) -> pd.DataFrame:
                     ),
                     "model": record.get("model") or item.get("model") or "unknown",
                     "amount": amount_usd,
-                    "currency": "usd",
+                    "currency": str(record.get("currency") or item.get("currency") or "usd").lower(),
                 }
             )
 
@@ -436,12 +448,12 @@ def _cost_only_unified(cost_df: pd.DataFrame) -> pd.DataFrame:
     ].sort_values("timestamp")
 
 
-def _post_paginated(
+def _get_paginated(
     *,
     session: requests.Session,
     base_url: str,
     path: str,
-    payload: dict[str, Any],
+    params: dict[str, Any],
     timeout_seconds: int,
     max_retries: int,
     max_pages: int = MAX_PAGES,
@@ -451,14 +463,14 @@ def _post_paginated(
     page_count = 0
 
     while page_count < max_pages:
-        body = dict(payload)
+        query = dict(params)
         if next_page:
-            body["page"] = next_page
+            query["page"] = next_page
 
-        response_payload = _post_json(
+        response_payload = _get_json(
             session=session,
             url=f"{base_url}/{path.lstrip('/')}",
-            payload=body,
+            params=query,
             timeout_seconds=timeout_seconds,
             max_retries=max_retries,
         )
@@ -466,11 +478,13 @@ def _post_paginated(
         if isinstance(data, list):
             rows.extend([item for item in data if isinstance(item, dict)])
 
-        next_page = (
+        next_page = str(
             response_payload.get("next_page")
             or response_payload.get("next")
             or response_payload.get("next_cursor")
         )
+        if next_page in {"None", ""}:
+            next_page = None
         has_more = bool(response_payload.get("has_more")) or bool(next_page)
         page_count += 1
 
@@ -480,17 +494,17 @@ def _post_paginated(
     raise AnthropicAPIError(f"Pagination exceeded {max_pages} pages. Narrow date range and retry.")
 
 
-def _post_json(
+def _get_json(
     *,
     session: requests.Session,
     url: str,
-    payload: dict[str, Any],
+    params: dict[str, Any],
     timeout_seconds: int,
     max_retries: int,
 ) -> dict[str, Any]:
     for attempt in range(max_retries + 1):
         try:
-            response = session.post(url, json=payload, timeout=timeout_seconds)
+            response = session.get(url, params=params, timeout=timeout_seconds)
         except requests.RequestException as exc:
             if attempt == max_retries:
                 raise AnthropicAPIError(f"Request failed: {exc}") from exc
@@ -528,11 +542,10 @@ def _error_message(response: requests.Response) -> str:
     return response.text.strip() or "Anthropic API request failed"
 
 
-def _anthropic_group_dimensions(group_by: tuple[str, ...]) -> list[str]:
+def _anthropic_usage_group_dimensions(group_by: tuple[str, ...]) -> list[str]:
     mapping = {
         "model": "model",
         "project_id": "workspace_id",
-        "user_id": "user_id",
         "api_key_id": "api_key_id",
     }
     mapped = [mapping[key] for key in group_by if key in mapping]
@@ -543,30 +556,43 @@ def _anthropic_group_dimensions(group_by: tuple[str, ...]) -> list[str]:
     return mapped
 
 
-def _anthropic_granularity(bucket_width: str) -> str:
+def _anthropic_bucket_width(bucket_width: str) -> str:
     return "1h" if bucket_width == "1h" else "1d"
+
+
+def _anthropic_limit(bucket_width: str) -> int:
+    if bucket_width == "1h":
+        return 168
+    return 31
 
 
 def _extract_input_tokens(record: dict[str, Any]) -> float:
     if record.get("input_tokens") is not None:
         return _to_float(record.get("input_tokens"))
+    cache_creation = record.get("cache_creation")
+    cache_creation_1h = 0.0
+    cache_creation_5m = 0.0
+    if isinstance(cache_creation, dict):
+        cache_creation_1h = _to_float(cache_creation.get("ephemeral_1h_input_tokens"))
+        cache_creation_5m = _to_float(cache_creation.get("ephemeral_5m_input_tokens"))
     return (
         _to_float(record.get("uncached_input_tokens"))
         + _to_float(record.get("cache_read_input_tokens"))
         + _to_float(record.get("cache_creation_input_tokens"))
         + _to_float(record.get("ephemeral_1h_input_tokens"))
         + _to_float(record.get("ephemeral_5m_input_tokens"))
+        + cache_creation_1h
+        + cache_creation_5m
     )
 
 
 def _extract_cost_usd(record: dict[str, Any]) -> float:
-    # Anthropic cost report values are in cents.
     if record.get("amount") is not None:
         amount = record.get("amount")
         if isinstance(amount, dict):
             value = amount.get("value")
-            return _to_float(value) / 100.0
-        return _to_float(amount) / 100.0
+            return _to_float(value)
+        return _to_float(amount)
 
     if record.get("cost") is not None:
         return _to_float(record.get("cost"))

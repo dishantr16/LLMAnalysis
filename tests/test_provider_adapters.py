@@ -5,7 +5,7 @@ from src.providers.anthropic_adapter import (
     build_anthropic_unified_df,
     build_anthropic_usage_df,
 )
-from src.providers.groq_adapter import build_groq_unified_df
+from src.providers.groq_adapter import _build_query_range_urls, build_groq_unified_df
 
 
 def test_anthropic_usage_cost_and_unified_normalization() -> None:
@@ -46,8 +46,8 @@ def test_anthropic_usage_cost_and_unified_normalization() -> None:
     assert usage_df["input_tokens"].sum() == 1200
     assert usage_df["output_tokens"].sum() == 500
     assert usage_df["total_tokens"].sum() == 1700
-    assert cost_df["amount"].sum() == 2.5
-    assert unified_df["cost_usd"].sum() == 2.5
+    assert cost_df["amount"].sum() == 250.0
+    assert unified_df["cost_usd"].sum() == 250.0
     assert set(unified_df["provider"]) == {"anthropic"}
 
 
@@ -67,3 +67,13 @@ def test_groq_unified_builds_cost_from_metrics() -> None:
     assert unified_df.iloc[0]["cost_usd"] == 0.13
     assert unified_df.iloc[0]["cost_source"] == "estimated"
     assert unified_df.iloc[0]["provider"] == "groq"
+
+
+def test_groq_query_range_url_builder() -> None:
+    assert _build_query_range_urls("https://api.groq.com/v1/metrics/prometheus") == [
+        "https://api.groq.com/v1/metrics/prometheus/api/v1/query_range",
+        "https://api.groq.com/v1/metrics/prometheus/query_range",
+    ]
+    assert _build_query_range_urls("https://api.groq.com/v1/metrics/prometheus/api/v1") == [
+        "https://api.groq.com/v1/metrics/prometheus/api/v1/query_range"
+    ]

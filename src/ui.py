@@ -14,6 +14,8 @@ from src.config import DEFAULT_BUCKET_WIDTH, DEFAULT_LOOKBACK_DAYS, DIMENSION_OP
 class DashboardFilters:
     api_key: str
     anthropic_api_key: str
+    groq_api_key: str
+    groq_metrics_base_url: str
     azure_openai_api_key: str
     azure_openai_endpoint: str
     date_from: date
@@ -58,7 +60,13 @@ def render_header() -> None:
     )
 
 
-def render_sidebar(default_api_key: str = "") -> DashboardFilters:
+def render_sidebar(
+    default_api_key: str = "",
+    *,
+    default_anthropic_api_key: str = "",
+    default_groq_api_key: str = "",
+    default_groq_metrics_base_url: str = "https://api.groq.com/v1/metrics/prometheus",
+) -> DashboardFilters:
     st.sidebar.header("Connection & Filters")
 
     api_key = st.sidebar.text_input(
@@ -68,12 +76,23 @@ def render_sidebar(default_api_key: str = "") -> DashboardFilters:
         help="Use an Admin key to access organization usage and costs endpoints.",
     )
 
-    with st.sidebar.expander("Provider Scaffolding (Future Connectors)", expanded=False):
+    with st.sidebar.expander("Additional Providers", expanded=False):
         anthropic_api_key = st.text_input(
             "Anthropic API Key",
-            value="",
+            value=default_anthropic_api_key,
             type="password",
-            help="Optional scaffold input. Adapter interface is wired; endpoint integration is next.",
+            help="Used for Anthropic usage/cost report APIs.",
+        )
+        groq_api_key = st.text_input(
+            "Groq API Key",
+            value=default_groq_api_key,
+            type="password",
+            help="Used for Groq metrics API.",
+        )
+        groq_metrics_base_url = st.text_input(
+            "Groq Metrics Base URL",
+            value=default_groq_metrics_base_url,
+            help="Default: https://api.groq.com/v1/metrics/prometheus",
         )
         azure_openai_api_key = st.text_input(
             "Azure OpenAI API Key",
@@ -118,6 +137,8 @@ def render_sidebar(default_api_key: str = "") -> DashboardFilters:
     return DashboardFilters(
         api_key=api_key.strip(),
         anthropic_api_key=anthropic_api_key.strip(),
+        groq_api_key=groq_api_key.strip(),
+        groq_metrics_base_url=groq_metrics_base_url.strip(),
         azure_openai_api_key=azure_openai_api_key.strip(),
         azure_openai_endpoint=azure_openai_endpoint.strip(),
         date_from=date_from,

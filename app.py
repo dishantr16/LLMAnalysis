@@ -43,11 +43,19 @@ from src.charts import (
     top_models_cost_chart,
     usage_trend_chart,
 )
-from src.config import CACHE_TTL_SECONDS, ENV_OPENAI_ADMIN_KEY, USAGE_ENDPOINT_LABELS
+from src.config import (
+    CACHE_TTL_SECONDS,
+    ENV_ANTHROPIC_ADMIN_KEY,
+    ENV_GROQ_API_KEY,
+    ENV_OPENAI_ADMIN_KEY,
+    GROQ_METRICS_BASE_URL,
+    USAGE_ENDPOINT_LABELS,
+)
 from src.fetchers import build_time_window
 from src.providers import (
     AnthropicProviderAdapter,
     AzureOpenAIProviderAdapter,
+    GroqProviderAdapter,
     OpenAIProviderAdapter,
     empty_unified_df,
 )
@@ -65,6 +73,8 @@ from src.ui import (
 def fetch_dashboard_data(
     openai_api_key: str,
     anthropic_api_key: str,
+    groq_api_key: str,
+    groq_metrics_base_url: str,
     azure_openai_api_key: str,
     azure_openai_endpoint: str,
     start_time: int,
@@ -75,6 +85,7 @@ def fetch_dashboard_data(
     adapters = [
         OpenAIProviderAdapter(openai_api_key),
         AnthropicProviderAdapter(anthropic_api_key),
+        GroqProviderAdapter(groq_api_key, metrics_base_url=groq_metrics_base_url),
         AzureOpenAIProviderAdapter(azure_openai_api_key, azure_openai_endpoint),
     ]
 
@@ -411,12 +422,24 @@ def main() -> None:
     render_header()
 
     default_openai_key = st.session_state.get("openai_admin_key") or os.getenv(ENV_OPENAI_ADMIN_KEY, "")
-    filters = render_sidebar(default_api_key=default_openai_key)
+    default_anthropic_key = os.getenv(ENV_ANTHROPIC_ADMIN_KEY, "")
+    default_groq_key = os.getenv(ENV_GROQ_API_KEY, "")
+    filters = render_sidebar(
+        default_api_key=default_openai_key,
+        default_anthropic_api_key=default_anthropic_key,
+        default_groq_api_key=default_groq_key,
+        default_groq_metrics_base_url=GROQ_METRICS_BASE_URL,
+    )
 
     if filters.api_key:
         st.session_state["openai_admin_key"] = filters.api_key
 
-    if not (filters.api_key or filters.anthropic_api_key or filters.azure_openai_api_key):
+    if not (
+        filters.api_key
+        or filters.anthropic_api_key
+        or filters.groq_api_key
+        or filters.azure_openai_api_key
+    ):
         st.warning("Enter at least one provider credential in the sidebar to continue.")
         render_limitations()
         return
@@ -434,6 +457,8 @@ def main() -> None:
         filters.group_by,
         bool(filters.api_key),
         bool(filters.anthropic_api_key),
+        bool(filters.groq_api_key),
+        filters.groq_metrics_base_url,
         bool(filters.azure_openai_api_key),
         filters.azure_openai_endpoint,
     )
@@ -450,6 +475,8 @@ def main() -> None:
                 payload = fetch_dashboard_data(
                     openai_api_key=filters.api_key,
                     anthropic_api_key=filters.anthropic_api_key,
+                    groq_api_key=filters.groq_api_key,
+                    groq_metrics_base_url=filters.groq_metrics_base_url,
                     azure_openai_api_key=filters.azure_openai_api_key,
                     azure_openai_endpoint=filters.azure_openai_endpoint,
                     start_time=start_time,

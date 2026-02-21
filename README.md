@@ -1,6 +1,6 @@
 # LLM Cost Analysis Module (POC)
 
-Streamlit dashboard that pulls OpenAI organization usage and cost data and visualizes model-wise usage, token consumption, and billing trends.
+Streamlit dashboard that pulls OpenAI, Anthropic, and Groq usage/cost signals and visualizes model-wise usage, token consumption, and billing trends.
 
 ## What this POC covers
 - OpenAI Admin key based authorization (user-pasted, session-only)
@@ -13,6 +13,11 @@ Streamlit dashboard that pulls OpenAI organization usage and cost data and visua
   - `/v1/organization/usage/vector_stores`
   - `/v1/organization/usage/code_interpreter_sessions`
 - OpenAI org cost data (`/v1/organization/costs`)
+- Anthropic org usage + cost reporting:
+  - `/v1/organizations/usage_report/messages`
+  - `/v1/organizations/cost_report`
+- Groq metrics API usage:
+  - `/v1/metrics/prometheus/api/v1/query_range` (requests/tokens metrics)
 - Interactive charts for:
   - daily trends
   - weekly/monthly/yearly summaries
@@ -21,9 +26,10 @@ Streamlit dashboard that pulls OpenAI organization usage and cost data and visua
   - project and line-item billing views
 - Usage Explorer for non-completions endpoints (metric + dimension breakdowns)
 - Forecasts (beta) for 30-day token and cost projections
-- Unified provider adapter scaffold:
+- Unified provider adapters:
   - OpenAI adapter (implemented)
-  - Anthropic adapter (scaffold)
+  - Anthropic adapter (implemented)
+  - Groq adapter (implemented, cost estimated from token metrics)
   - Azure OpenAI adapter (scaffold)
 - Unified provider insights:
   - Monthly Spend Trend vs Budget
@@ -57,9 +63,10 @@ Streamlit dashboard that pulls OpenAI organization usage and cost data and visua
    ```bash
    pip install -r requirements.txt
    ```
-3. Add key (either option):
-   - set `OPENAI_ADMIN_KEY` in `.env`
-   - or paste key in Streamlit sidebar
+3. Add keys (either in `.env` or Streamlit sidebar):
+   - `OPENAI_ADMIN_KEY`
+   - `ANTHROPIC_ADMIN_KEY`
+   - `GROQ_API_KEY`
 
 ## Run
 ```bash
@@ -73,4 +80,6 @@ pytest
 
 ## Notes
 - Keep `MODEL_PRICING_PER_MILLION` in `src/config.py` updated manually.
+- Keep `GROQ_MODEL_PRICING_PER_MILLION` in `src/config.py` updated manually.
 - Estimated model cost is derived from token counts and local pricing map when direct model cost attribution is unavailable.
+- Groq integration depends on access to org metrics endpoints; without that entitlement, metrics queries will return empty/forbidden responses.

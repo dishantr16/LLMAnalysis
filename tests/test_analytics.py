@@ -2,6 +2,7 @@ import pandas as pd
 import pytest
 
 from src.analytics import (
+    apply_openai_rate_limits,
     aggregate_cost,
     aggregate_generic_usage,
     aggregate_usage,
@@ -9,12 +10,16 @@ from src.analytics import (
     build_generic_metric_dimension_summary,
     build_model_summary,
     build_token_distribution,
+    cost_reduction_trends,
     compute_kpis,
     model_cost_breakdown,
     monthly_spend_trend,
+    observed_capacity_metrics,
+    top_models_by_cost_for_window,
     project_current_month_total,
     spend_by_provider,
     top_models_by_cost,
+    unified_cost_kpis,
 )
 
 
@@ -189,3 +194,96 @@ def test_provider_insights_aggregations() -> None:
         "Status",
     }
     assert expected_columns.issubset(set(breakdown.columns))
+
+
+def test_windowed_top_models_kpis_and_cost_reduction() -> None:
+    unified_df = pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp("2026-01-01", tz="UTC"),
+                "provider": "openai",
+                "model": "gpt-4o",
+                "calls": 10,
+                "total_tokens": 1000,
+                "cost_usd": 10.0,
+            },
+            {
+                "timestamp": pd.Timestamp("2026-01-08", tz="UTC"),
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "calls": 20,
+                "total_tokens": 2000,
+                "cost_usd": 5.0,
+            },
+            {
+                "timestamp": pd.Timestamp("2026-01-09", tz="UTC"),
+                "provider": "anthropic",
+                "model": "claude-sonnet",
+                "calls": 15,
+                "total_tokens": 1500,
+                "cost_usd": 8.0,
+            },
+        ]
+    )
+
+    top_7d = top_models_by_cost_for_window(unified_df, lookback_days=7, top_n=5)
+    assert not top_7d.empty
+    assert set(top_7d["model"]).issubset({"gpt-4o-mini", "claude-sonnet"})
+
+    kpis = unified_cost_kpis(unified_df)
+    assert kpis["total_spend_usd"] == 23.0
+    assert kpis["total_calls"] == 45.0
+    assert kpis["avg_cost_per_inference"] == pytest.approx(23.0 / 45.0)
+
+    trends = cost_reduction_trends(unified_df, window_days=7)
+    assert set(trends["provider"]) == {"openai", "anthropic"}
+
+
+def test_capacity_and_openai_limit_utilization() -> None:
+    unified_df = pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp("2026-01-10T00:00:00Z"),
+                "provider": "openai",
+                "model": "gpt-4o",
+                "calls": 120,
+                "total_tokens": 240_000,
+            },
+            {
+                "timestamp": pd.Timestamp("2026-01-10T01:00:00Z"),
+                "provider": "openai",
+                "model": "gpt-4o",
+                "calls": 60,
+                "total_tokens": 120_000,
+            },
+            {
+                "timestamp": pd.Timestamp("2026-01-10T00:00:00Z"),
+                "provider": "anthropic",
+                "model": "claude-sonnet",
+                "calls": 40,
+                "total_tokens": 80_000,
+            },
+        ]
+    )
+    capacity = observed_capacity_metrics(unified_df, bucket_width="1h")
+    assert "max_tpm" in capacity.columns
+    assert "max_rpm" in capacity.columns
+
+    openai_limits = pd.DataFrame(
+        [
+            {
+                "provider": "openai",
+                "project_id": "proj_1",
+                "project_name": "Project 1",
+                "model": "gpt-4o",
+                "rpm_limit": 300.0,
+                "tpm_limit": 6000.0,
+                "rpd_limit": 0.0,
+                "tpd_limit": 0.0,
+            }
+        ]
+    )
+    merged = apply_openai_rate_limits(capacity, openai_limits)
+    openai_row = merged[(merged["provider"] == "openai") & (merged["model"] == "gpt-4o")].iloc[0]
+    assert openai_row["tpm_limit"] == 6000.0
+    assert pd.notna(openai_row["tpm_utilization_pct"])

@@ -55,8 +55,8 @@ def apply_app_styles() -> None:
 def render_header() -> None:
     st.title("LLM Cost Analysis Module")
     st.caption(
-        "OpenAI usage and billing analytics POC with multi-endpoint coverage, "
-        "baseline forecasting, and roadmap toward multi-provider unification."
+        "Multi-provider usage and cost analytics POC (OpenAI, Anthropic, Groq) with interactive "
+        "insights, baseline forecasting, and migration-oriented model intelligence."
     )
 
 
@@ -163,7 +163,8 @@ def render_limitations() -> None:
     st.info(
         "Prompt text, response text, and true per-request billing are not exposed by the "
         "organization usage/cost APIs used in this POC. Model-level cost values may be estimated "
-        "using a local pricing map when direct model billing attribution is unavailable."
+        "using local pricing maps when direct model billing attribution is unavailable. "
+        "Model intelligence labels are lightweight heuristics and should be validated with offline quality tests."
     )
 
 

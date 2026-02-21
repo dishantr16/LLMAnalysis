@@ -34,16 +34,26 @@ Streamlit dashboard that pulls OpenAI, Anthropic, and Groq usage/cost signals an
 - Unified provider insights:
   - Monthly Spend Trend vs Budget
   - Spend by Provider
-  - Top Models by Cost
+  - Top Models by Cost (`24h`, `7d`, `30d`)
+  - Provider cost/request trend views
+  - AI cost reduction trend (`last 7d` vs previous `7d`)
   - Model Cost Breakdown table (`Rank`, `Model`, `Provider`, `Calls (24h)`, `Avg Tokens`, `CPI`, `7-Day Trend`, `Status`)
+- Capacity & limits analytics:
+  - Observed `TPM`, `RPM`, `TPD`, `RPD` (peak)
+  - OpenAI project/model rate limit fetch + utilization status
+  - Compute load proxy (estimated from utilization; not direct GPU telemetry)
+- Model intelligence:
+  - Model-fit matrix (best-suited-for, reasoning/latency/cost profiles)
+  - Migration recommendation simulator with projected spend delta
 - CSV export for usage and cost datasets
 
 ## What this POC does not cover
 - OAuth-style account connection flow
 - Raw prompt/response text analytics from OpenAI org endpoints
-- True per-request billing from OpenAI (not exposed directly via aggregate endpoints)
+- True per-request billing is not uniformly exposed by all providers
 - Production-grade multi-tenant secret management
 - Production-grade forecasting (current forecast is baseline linear projection)
+- Anthropic/Groq org-level limit APIs are not integrated (OpenAI rate-limit API is integrated)
 
 ## Project structure
 - `app.py`: Streamlit entrypoint
@@ -53,8 +63,10 @@ Streamlit dashboard that pulls OpenAI, Anthropic, and Groq usage/cost signals an
 - `src/transformers.py`: JSON to DataFrame normalization
 - `src/analytics.py`: KPI and aggregation logic
 - `src/charts.py`: Plotly chart builders
+- `src/model_intelligence.py`: model-fit and migration recommendation helpers
 - `src/ui.py`: Streamlit layout helpers
 - `docs/llm-cost-analysis-poc-plan.md`: implementation plan
+- `docs/multi-provider-review-and-gap-analysis.md`: detailed review and gap mapping
 - `tests/`: unit tests
 
 ## Setup
@@ -82,4 +94,5 @@ pytest
 - Keep `MODEL_PRICING_PER_MILLION` in `src/config.py` updated manually.
 - Keep `GROQ_MODEL_PRICING_PER_MILLION` in `src/config.py` updated manually.
 - Estimated model cost is derived from token counts and local pricing map when direct model cost attribution is unavailable.
+- Model intelligence capability labels are heuristic and should be validated with offline quality benchmarks.
 - Groq integration depends on access to org metrics endpoints; without that entitlement, metrics queries will return empty/forbidden responses.

@@ -291,3 +291,80 @@ def top_models_cost_chart(models_df: pd.DataFrame) -> go.Figure:
     )
     fig.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10), legend_title_text="")
     return fig
+
+
+def provider_metric_trend_chart(
+    trend_df: pd.DataFrame,
+    *,
+    metric: str,
+    title: str,
+) -> go.Figure:
+    if trend_df.empty or metric not in trend_df.columns:
+        return empty_figure("No provider trend data")
+
+    fig = px.line(
+        trend_df,
+        x="period",
+        y=metric,
+        color="provider",
+        markers=True,
+        title=title,
+        labels={"period": "Date", metric: metric.replace("_", " ").title(), "provider": "Provider"},
+        template=PLOTLY_TEMPLATE,
+    )
+    fig.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10), legend_title_text="")
+    return fig
+
+
+def cost_reduction_chart(trends_df: pd.DataFrame, *, title: str) -> go.Figure:
+    if trends_df.empty or "cost_delta_pct" not in trends_df.columns:
+        return empty_figure("No cost reduction trend data")
+
+    fig = px.bar(
+        trends_df,
+        x="provider",
+        y="cost_delta_pct",
+        color="trend",
+        title=title,
+        labels={
+            "provider": "Provider",
+            "cost_delta_pct": "Cost Delta (%)",
+            "trend": "Trend",
+        },
+        template=PLOTLY_TEMPLATE,
+    )
+    fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="#6b7280")
+    fig.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10), legend_title_text="")
+    return fig
+
+
+def capacity_utilization_chart(
+    capacity_df: pd.DataFrame,
+    *,
+    metric: str = "tpm_utilization_pct",
+) -> go.Figure:
+    if capacity_df.empty or metric not in capacity_df.columns:
+        return empty_figure("No capacity utilization data")
+
+    plot_df = capacity_df.copy()
+    plot_df = plot_df[plot_df[metric].notna()]
+    if plot_df.empty:
+        return empty_figure("No API limit utilization data")
+
+    plot_df["model_provider"] = plot_df["model"] + " · " + plot_df["provider"]
+    fig = px.bar(
+        plot_df.sort_values(metric, ascending=False).head(20),
+        x="model_provider",
+        y=metric,
+        color="status",
+        title="Rate Limit Utilization (Top 20)",
+        labels={
+            "model_provider": "Model",
+            metric: metric.replace("_", " ").title(),
+            "status": "Status",
+        },
+        template=PLOTLY_TEMPLATE,
+    )
+    fig.add_hline(y=100, line_dash="dash", line_color="#b91c1c")
+    fig.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10), legend_title_text="")
+    return fig

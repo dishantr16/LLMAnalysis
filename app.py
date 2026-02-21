@@ -13,6 +13,7 @@ from src.analytics import (
     aggregate_cost,
     aggregate_generic_usage,
     aggregate_usage,
+    apply_openai_rate_limits,
     build_actual_vs_forecast,
     build_dimension_summary,
     build_generic_metric_dimension_summary,
@@ -20,16 +21,22 @@ from src.analytics import (
     build_model_summary,
     build_project_cost_summary,
     build_token_distribution,
+    cost_reduction_trends,
     compute_kpis,
     extract_metric_columns,
     model_cost_breakdown,
     monthly_spend_trend,
+    observed_capacity_metrics,
+    provider_cost_usage_trend,
     project_current_month_total,
     spend_by_provider,
-    top_models_by_cost,
+    top_models_by_cost_for_window,
+    unified_cost_kpis,
 )
 from src.charts import (
+    capacity_utilization_chart,
     cost_trend_chart,
+    cost_reduction_chart,
     forecast_chart,
     generic_dimension_bar_chart,
     generic_metric_trend_chart,
@@ -38,6 +45,7 @@ from src.charts import (
     monthly_budget_chart,
     project_cost_chart,
     provider_spend_chart,
+    provider_metric_trend_chart,
     requests_by_model_chart,
     token_distribution_pie,
     top_models_cost_chart,
@@ -48,10 +56,17 @@ from src.config import (
     ENV_ANTHROPIC_ADMIN_KEY,
     ENV_GROQ_API_KEY,
     ENV_OPENAI_ADMIN_KEY,
+    GROQ_MODEL_PRICING_PER_MILLION,
     GROQ_METRICS_BASE_URL,
+    MODEL_PRICING_PER_MILLION,
     USAGE_ENDPOINT_LABELS,
 )
 from src.fetchers import build_time_window
+from src.model_intelligence import (
+    build_model_intelligence_table,
+    list_provider_models,
+    recommend_migration,
+)
 from src.providers import (
     AnthropicProviderAdapter,
     AzureOpenAIProviderAdapter,
@@ -213,6 +228,13 @@ def render_provider_insights_tab(unified_df: pd.DataFrame) -> None:
         st.info("No unified provider rows yet. Connect at least one provider.")
         return
 
+    kpis = unified_cost_kpis(unified_df)
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Total AI Spend", f"${kpis['total_spend_usd']:.2f}")
+    k2.metric("Avg Cost / Inference", f"${kpis['avg_cost_per_inference']:.6f}")
+    k3.metric("Active Providers", f"{int(kpis['active_providers'])}")
+    k4.metric("Active Models", f"{int(kpis['active_models'])}")
+
     monthly_budget = st.number_input(
         "Monthly Budget (USD)",
         min_value=0.0,
@@ -223,8 +245,9 @@ def render_provider_insights_tab(unified_df: pd.DataFrame) -> None:
 
     monthly_df = monthly_spend_trend(unified_df)
     provider_df = spend_by_provider(unified_df)
-    top_models_df = top_models_by_cost(unified_df, top_n=10)
+    provider_daily = provider_cost_usage_trend(unified_df, freq="D")
     breakdown_df = model_cost_breakdown(unified_df, top_n=25)
+    reduction_df = cost_reduction_trends(unified_df, window_days=7)
 
     c1, c2 = st.columns(2)
     c1.plotly_chart(
@@ -233,11 +256,273 @@ def render_provider_insights_tab(unified_df: pd.DataFrame) -> None:
     )
     c2.plotly_chart(provider_spend_chart(provider_df), use_container_width=True)
 
-    st.plotly_chart(top_models_cost_chart(top_models_df), use_container_width=True)
+    c3, c4 = st.columns(2)
+    c3.plotly_chart(
+        provider_metric_trend_chart(
+            provider_daily,
+            metric="cost_usd",
+            title="Provider Cost Trend (Daily)",
+        ),
+        use_container_width=True,
+    )
+    c4.plotly_chart(
+        provider_metric_trend_chart(
+            provider_daily,
+            metric="calls",
+            title="Provider Request Trend (Daily)",
+        ),
+        use_container_width=True,
+    )
+
+    st.markdown("### Top Models by Cost")
+    window_tabs = st.tabs(["Last 24 Hours", "Last 7 Days", "Last 30 Days"])
+    window_specs = [("24h", 1), ("7d", 7), ("30d", 30)]
+
+    udf = unified_df.copy()
+    udf["timestamp"] = pd.to_datetime(udf["timestamp"], utc=True)
+    latest_ts = udf["timestamp"].max()
+    udf["calls"] = pd.to_numeric(udf["calls"], errors="coerce").fillna(0.0)
+
+    for tab, (label, days) in zip(window_tabs, window_specs):
+        with tab:
+            top_models_df = top_models_by_cost_for_window(unified_df, lookback_days=days, top_n=10)
+            st.plotly_chart(top_models_cost_chart(top_models_df), use_container_width=True)
+
+            window_start = latest_ts - pd.Timedelta(days=days)
+            window_df = udf[udf["timestamp"] >= window_start]
+            model_calls_df = (
+                window_df.groupby(["model", "provider"], as_index=False)
+                .agg(calls=("calls", "sum"), window_cost=("cost_usd", "sum"))
+            )
+            explanation_df = top_models_df.merge(model_calls_df, on=["model", "provider"], how="left")
+            explanation_df["calls"] = explanation_df["calls"].fillna(0.0)
+            explanation_df["window_cost"] = explanation_df["window_cost"].fillna(explanation_df["cost_usd"])
+            total_window_cost = float(window_df["cost_usd"].sum()) if not window_df.empty else 0.0
+            explanation_df["share_pct"] = (
+                (explanation_df["window_cost"] / total_window_cost) * 100.0 if total_window_cost > 0 else 0.0
+            )
+            explanation_df["avg_cost_per_call"] = (
+                explanation_df["window_cost"] / explanation_df["calls"].replace(0, pd.NA)
+            ).fillna(0.0)
+
+            if not explanation_df.empty:
+                top_row = explanation_df.iloc[0]
+                st.caption(
+                    f"{label} leader: `{top_row['model']}` ({top_row['provider']}) "
+                    f"accounts for {float(top_row['share_pct']):.1f}% of spend in this window."
+                )
+
+            st.dataframe(
+                explanation_df.rename(
+                    columns={
+                        "model": "Model",
+                        "provider": "Provider",
+                        "cost_usd": "Cost (USD)",
+                        "calls": "Calls",
+                        "share_pct": "Spend Share (%)",
+                        "avg_cost_per_call": "Avg Cost/Call",
+                    }
+                )[
+                    [
+                        "Model",
+                        "Provider",
+                        "Cost (USD)",
+                        "Calls",
+                        "Spend Share (%)",
+                        "Avg Cost/Call",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    st.markdown("### AI Cost Reduction Trend (7d vs Previous 7d)")
+    st.plotly_chart(
+        cost_reduction_chart(reduction_df, title="Cost Delta Percentage by Provider"),
+        use_container_width=True,
+    )
+    st.dataframe(
+        reduction_df.rename(
+            columns={
+                "provider": "Provider",
+                "current_period_cost": "Current 7d Cost",
+                "previous_period_cost": "Previous 7d Cost",
+                "cost_delta": "Delta (USD)",
+                "cost_delta_pct": "Delta (%)",
+                "trend": "Trend",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
 
     st.markdown("### Model Cost Breakdown")
     st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
 
+
+
+def render_capacity_limits_tab(
+    unified_df: pd.DataFrame,
+    openai_project_rate_limits_df: pd.DataFrame,
+    *,
+    bucket_width: str,
+) -> None:
+    st.subheader("Rate Limits & Capacity Awareness")
+
+    if unified_df.empty:
+        st.info("No provider usage rows available for capacity analysis.")
+        return
+
+    st.caption(
+        "Observed TPM/RPM/TPD/RPD are derived from fetched usage buckets. OpenAI limits are API-fetched. "
+        "Anthropic and Groq limit caps are not exposed via a comparable org limits API in this POC. "
+        "Compute Load Proxy is an estimated utilization index, not direct GPU telemetry."
+    )
+
+    observed_df = observed_capacity_metrics(unified_df, bucket_width=bucket_width)
+    capacity_df = apply_openai_rate_limits(observed_df, openai_project_rate_limits_df)
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Tracked Model-Provider Pairs", f"{len(capacity_df)}")
+    openai_with_limits = capacity_df[
+        (capacity_df["provider"] == "openai") & capacity_df["tpm_limit"].notna()
+    ]
+    k2.metric("OpenAI Models With API Limits", f"{len(openai_with_limits)}")
+    max_openai_util = (
+        float(openai_with_limits["tpm_utilization_pct"].max())
+        if not openai_with_limits.empty
+        else 0.0
+    )
+    k3.metric("Highest OpenAI TPM Utilization", f"{max_openai_util:.1f}%")
+    util_candidates = pd.concat(
+        [
+            pd.to_numeric(capacity_df.get("tpm_utilization_pct"), errors="coerce"),
+            pd.to_numeric(capacity_df.get("rpm_utilization_pct"), errors="coerce"),
+        ]
+    ).dropna()
+    compute_load_proxy = float(util_candidates.mean()) if not util_candidates.empty else 0.0
+    k4.metric("Compute Load Proxy", f"{compute_load_proxy:.1f}%")
+
+    st.plotly_chart(capacity_utilization_chart(capacity_df), use_container_width=True)
+
+    display_df = capacity_df.copy()
+    for col in ["max_tpm", "max_rpm", "tpm_utilization_pct", "rpm_utilization_pct"]:
+        if col in display_df.columns:
+            display_df[col] = pd.to_numeric(display_df[col], errors="coerce").round(2)
+    for col in ["max_tpd", "max_rpd", "tpm_limit", "rpm_limit", "tpd_limit", "rpd_limit"]:
+        if col in display_df.columns:
+            display_df[col] = pd.to_numeric(display_df[col], errors="coerce").round(0)
+
+    st.dataframe(
+        display_df.rename(
+            columns={
+                "provider": "Provider",
+                "model": "Model",
+                "max_tpm": "Observed TPM (Peak)",
+                "max_rpm": "Observed RPM (Peak)",
+                "max_tpd": "Observed TPD (Peak)",
+                "max_rpd": "Observed RPD (Peak)",
+                "tpm_limit": "TPM Limit",
+                "rpm_limit": "RPM Limit",
+                "tpd_limit": "TPD Limit",
+                "rpd_limit": "RPD Limit",
+                "tpm_utilization_pct": "TPM Utilization (%)",
+                "rpm_utilization_pct": "RPM Utilization (%)",
+                "status": "Status",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    with st.expander("Raw OpenAI Project Rate Limits", expanded=False):
+        if openai_project_rate_limits_df.empty:
+            st.info("No OpenAI project rate limit rows returned.")
+        else:
+            st.dataframe(openai_project_rate_limits_df, use_container_width=True, hide_index=True)
+
+
+def render_model_intelligence_tab(unified_df: pd.DataFrame) -> None:
+    st.subheader("Model Intelligence")
+    st.caption(
+        "Profiles below combine observed usage/cost patterns with lightweight capability tags for migration planning."
+    )
+
+    if unified_df.empty:
+        st.info("No unified provider rows available for model intelligence.")
+        return
+
+    intelligence_df = build_model_intelligence_table(unified_df)
+    st.dataframe(intelligence_df, use_container_width=True, hide_index=True)
+
+    model_pairs = list_provider_models(unified_df)
+    if not model_pairs:
+        st.info("No models available for migration simulation.")
+        return
+
+    st.markdown("### Migration Recommendation")
+    option_map = {
+        f"{provider.title()} · {model}": (provider, model)
+        for provider, model in model_pairs
+    }
+    options = list(option_map.keys())
+    default_source_idx = 0
+    default_target_idx = 1 if len(options) > 1 else 0
+
+    c1, c2 = st.columns(2)
+    source_label = c1.selectbox("Source Model", options=options, index=default_source_idx)
+    target_label = c2.selectbox("Target Model", options=options, index=default_target_idx)
+
+    source_provider, source_model = option_map[source_label]
+    target_provider, target_model = option_map[target_label]
+
+    target_cpi_override = st.number_input(
+        "Target CPI Override (optional USD/request)",
+        min_value=0.0,
+        value=0.0,
+        step=0.0001,
+        format="%.6f",
+        help="Use when the target model has no observed CPI and no pricing map entry.",
+    )
+
+    pricing_maps = {
+        "openai": MODEL_PRICING_PER_MILLION,
+        "groq": GROQ_MODEL_PRICING_PER_MILLION,
+        "anthropic": {},
+    }
+    result = recommend_migration(
+        unified_df,
+        source_provider=source_provider,
+        source_model=source_model,
+        target_provider=target_provider,
+        target_model=target_model,
+        pricing_maps=pricing_maps,
+        target_cpi_override=target_cpi_override if target_cpi_override > 0 else None,
+    )
+
+    if "error" in result:
+        st.warning(result["error"])
+        return
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Source Spend", f"${result['source_cost']:.2f}")
+    m2.metric("Projected Target Spend", f"${result['estimated_target_cost']:.2f}")
+    m3.metric("Spend Delta", f"${result['cost_delta']:.2f}")
+    m4.metric("Delta (%)", f"{result['cost_delta_pct']:+.2f}%")
+
+    st.caption(f"Target CPI source: `{result['target_cpi_source']}`")
+    st.markdown(f"**Recommendation:** {result['recommendation']}")
+
+    src_profile = result["source_profile"]
+    tgt_profile = result["target_profile"]
+    st.markdown(
+        f"**Source ({source_model})**: {src_profile['best_for']} | "
+        f"Latency: {src_profile['latency']} | Reasoning: {src_profile['reasoning']}"
+    )
+    st.markdown(
+        f"**Target ({target_model})**: {tgt_profile['best_for']} | "
+        f"Latency: {tgt_profile['latency']} | Reasoning: {tgt_profile['reasoning']}"
+    )
 
 
 def render_usage_explorer_tab(aux_usage_frames: dict[str, pd.DataFrame]) -> None:
@@ -504,6 +789,7 @@ def main() -> None:
     usage_df = openai_payload.get("usage_df", pd.DataFrame())
     cost_df = openai_payload.get("cost_df", pd.DataFrame())
     aux_usage_frames = openai_payload.get("aux_usage_frames", {})
+    openai_project_rate_limits_df = openai_payload.get("project_rate_limits_df", pd.DataFrame())
 
     if provider_results:
         with st.expander("Provider notices", expanded=False):
@@ -524,6 +810,8 @@ def main() -> None:
         [
             "Overview",
             "Provider Insights",
+            "Capacity & Limits",
+            "Model Intelligence",
             "Usage Explorer",
             "Forecasts (beta)",
             # "Future Roadmap",
@@ -538,8 +826,16 @@ def main() -> None:
     with tabs[1]:
         render_provider_insights_tab(unified_df)
     with tabs[2]:
-        render_usage_explorer_tab(aux_usage_frames)
+        render_capacity_limits_tab(
+            unified_df,
+            openai_project_rate_limits_df,
+            bucket_width=filters.bucket_width,
+        )
     with tabs[3]:
+        render_model_intelligence_tab(unified_df)
+    with tabs[4]:
+        render_usage_explorer_tab(aux_usage_frames)
+    with tabs[5]:
         if usage_df.empty and cost_df.empty:
             st.info("Forecasts currently run on OpenAI usage/cost series.")
         else:

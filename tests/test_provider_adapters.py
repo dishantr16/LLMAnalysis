@@ -46,8 +46,8 @@ def test_anthropic_usage_cost_and_unified_normalization() -> None:
     assert usage_df["input_tokens"].sum() == 1200
     assert usage_df["output_tokens"].sum() == 500
     assert usage_df["total_tokens"].sum() == 1700
-    assert cost_df["amount"].sum() == 250.0
-    assert unified_df["cost_usd"].sum() == 250.0
+    assert cost_df["amount"].sum() == 2.5
+    assert unified_df["cost_usd"].sum() == 2.5
     assert set(unified_df["provider"]) == {"anthropic"}
 
 

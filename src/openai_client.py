@@ -8,7 +8,14 @@ from typing import Any, Iterator
 
 import requests
 
-from src.config import API_BASE_URL, MAX_PAGES, MAX_RETRIES, REQUEST_TIMEOUT_SECONDS
+from src.config import (
+    API_BASE_URL,
+    MAX_PAGES,
+    MAX_RETRIES,
+    OPENAI_PROJECT_RATE_LIMITS_ENDPOINT_TEMPLATE,
+    OPENAI_PROJECTS_ENDPOINT,
+    REQUEST_TIMEOUT_SECONDS,
+)
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
@@ -93,6 +100,41 @@ class OpenAIAdminClient:
         raise OpenAIAPIError(
             f"Pagination exceeded {max_pages} pages. Narrow date range and retry."
         )
+
+    def list_projects(self, *, max_pages: int = MAX_PAGES) -> list[dict[str, Any]]:
+        """List organization projects using cursor pagination."""
+        rows: list[dict[str, Any]] = []
+        page_count = 0
+        after: str | None = None
+
+        while page_count < max_pages:
+            params: dict[str, Any] = {}
+            if after:
+                params["after"] = after
+
+            payload = self._get(OPENAI_PROJECTS_ENDPOINT, params=params or None)
+            data = payload.get("data", [])
+            if not isinstance(data, list):
+                raise OpenAIAPIError("Unexpected projects payload: data is not a list")
+
+            rows.extend([item for item in data if isinstance(item, dict)])
+
+            has_more = bool(payload.get("has_more"))
+            after = payload.get("last_id") or payload.get("next_page")
+            page_count += 1
+            if not has_more or not after:
+                return rows
+
+        raise OpenAIAPIError(f"Projects pagination exceeded {max_pages} pages")
+
+    def get_project_rate_limits(self, project_id: str) -> list[dict[str, Any]]:
+        """Fetch model rate limits for a project."""
+        path = OPENAI_PROJECT_RATE_LIMITS_ENDPOINT_TEMPLATE.format(project_id=project_id)
+        payload = self._get(path)
+        data = payload.get("data", [])
+        if not isinstance(data, list):
+            raise OpenAIAPIError("Unexpected rate limits payload: data is not a list")
+        return [item for item in data if isinstance(item, dict)]
 
     def _get(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
         url = f"{self.base_url}/{path.lstrip('/')}"

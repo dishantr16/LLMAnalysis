@@ -51,6 +51,9 @@ class OpenAIProviderAdapter(ProviderAdapter):
 
         usage_bucket_map: dict[str, list[dict[str, Any]]] = {}
         endpoint_errors: dict[str, str] = {}
+        project_rows: list[dict[str, Any]] = []
+        project_rate_limit_rows: list[dict[str, Any]] = []
+        project_rate_limit_errors: list[str] = []
 
         with OpenAIAdminClient(api_key=self.api_key) as client:
             for dataset, endpoint in USAGE_ENDPOINTS.items():
@@ -70,6 +73,33 @@ class OpenAIProviderAdapter(ProviderAdapter):
                 cost_buckets = []
                 endpoint_errors["costs"] = str(exc)
 
+            try:
+                project_rows = client.list_projects()
+            except OpenAIAPIError as exc:
+                project_rows = []
+                endpoint_errors["openai_project_rate_limits"] = str(exc)
+            else:
+                for project in project_rows:
+                    project_id = str(project.get("id") or "").strip()
+                    if not project_id:
+                        continue
+                    try:
+                        limits = client.get_project_rate_limits(project_id)
+                    except OpenAIAPIError as exc:
+                        project_rate_limit_errors.append(f"{project_id}: {exc}")
+                        continue
+
+                    for limit in limits:
+                        if not isinstance(limit, dict):
+                            continue
+                        row = dict(limit)
+                        row["project_id"] = project_id
+                        row["project_name"] = project.get("name") or project_id
+                        project_rate_limit_rows.append(row)
+
+        if project_rate_limit_errors and not project_rate_limit_rows:
+            endpoint_errors["openai_project_rate_limits"] = "; ".join(project_rate_limit_errors[:3])
+
         usage_df = build_usage_df(usage_bucket_map.get("completions", []))
         cost_df = build_cost_df(cost_buckets)
 
@@ -80,10 +110,15 @@ class OpenAIProviderAdapter(ProviderAdapter):
             auxiliary_usage_frames[dataset] = build_generic_usage_df(dataset, buckets)
 
         unified_df = build_openai_unified_df(usage_df, cost_df)
+        project_rate_limits_df = build_openai_project_rate_limits_df(project_rate_limit_rows)
 
         notices: list[str] = []
         if unified_df.empty:
             notices.append("OpenAI returned no model-level usage rows for selected range.")
+        if project_rate_limit_errors:
+            notices.append(
+                "OpenAI rate limits were partially fetched. Some projects returned errors."
+            )
 
         return ProviderFetchResult(
             provider=self.provider_name,
@@ -92,6 +127,7 @@ class OpenAIProviderAdapter(ProviderAdapter):
                 "usage_df": usage_df,
                 "cost_df": cost_df,
                 "aux_usage_frames": auxiliary_usage_frames,
+                "project_rate_limits_df": project_rate_limits_df,
             },
             endpoint_errors=endpoint_errors,
             notices=notices,
@@ -187,3 +223,49 @@ def _reconcile_daily_model_cost(usage_df: pd.DataFrame, cost_df: pd.DataFrame) -
             reconciled.loc[index_list] = day_reported / max(1, len(index_list))
 
     return reconciled.fillna(0.0)
+
+
+def build_openai_project_rate_limits_df(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "provider",
+                "project_id",
+                "project_name",
+                "model",
+                "rpm_limit",
+                "tpm_limit",
+                "rpd_limit",
+                "tpd_limit",
+            ]
+        )
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return pd.DataFrame()
+
+    if "model" not in df.columns:
+        df["model"] = "unknown"
+    if "project_id" not in df.columns:
+        df["project_id"] = "unknown"
+    if "project_name" not in df.columns:
+        df["project_name"] = df["project_id"]
+
+    def _num(col: str) -> pd.Series:
+        if col not in df.columns:
+            return pd.Series(0.0, index=df.index)
+        return pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    result = pd.DataFrame(
+        {
+            "provider": "openai",
+            "project_id": df["project_id"].astype(str),
+            "project_name": df["project_name"].astype(str),
+            "model": df["model"].astype(str),
+            "rpm_limit": _num("max_requests_per_1_minute"),
+            "tpm_limit": _num("max_tokens_per_1_minute"),
+            "rpd_limit": _num("max_requests_per_1_day"),
+            "tpd_limit": _num("max_tokens_per_1_day"),
+        }
+    )
+    return result.sort_values(["project_name", "model"]).reset_index(drop=True)

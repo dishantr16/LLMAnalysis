@@ -410,6 +410,249 @@ def top_models_by_cost(unified_df: pd.DataFrame, *, top_n: int = 10) -> pd.DataF
     return grouped.head(top_n)
 
 
+def top_models_by_cost_for_window(
+    unified_df: pd.DataFrame,
+    *,
+    lookback_days: int,
+    top_n: int = 10,
+) -> pd.DataFrame:
+    if unified_df.empty:
+        return pd.DataFrame(columns=["model", "provider", "cost_usd"])
+
+    df = unified_df.copy()
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    latest_ts = df["timestamp"].max()
+    start_ts = latest_ts - pd.Timedelta(days=lookback_days)
+    window_df = df[df["timestamp"] >= start_ts]
+    return top_models_by_cost(window_df, top_n=top_n)
+
+
+def unified_cost_kpis(unified_df: pd.DataFrame) -> dict[str, float]:
+    if unified_df.empty:
+        return {
+            "total_spend_usd": 0.0,
+            "total_calls": 0.0,
+            "avg_cost_per_inference": 0.0,
+            "active_providers": 0.0,
+            "active_models": 0.0,
+        }
+
+    df = unified_df.copy()
+    total_spend = float(pd.to_numeric(df["cost_usd"], errors="coerce").fillna(0.0).sum())
+    total_calls = float(pd.to_numeric(df["calls"], errors="coerce").fillna(0.0).sum())
+    avg_cost_per_inference = total_spend / total_calls if total_calls > 0 else 0.0
+
+    return {
+        "total_spend_usd": total_spend,
+        "total_calls": total_calls,
+        "avg_cost_per_inference": avg_cost_per_inference,
+        "active_providers": float(df["provider"].nunique()),
+        "active_models": float(df["model"].nunique()),
+    }
+
+
+def cost_reduction_trends(unified_df: pd.DataFrame, *, window_days: int = 7) -> pd.DataFrame:
+    columns = [
+        "provider",
+        "current_period_cost",
+        "previous_period_cost",
+        "cost_delta",
+        "cost_delta_pct",
+        "trend",
+    ]
+    if unified_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    df = unified_df.copy()
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df["cost_usd"] = pd.to_numeric(df["cost_usd"], errors="coerce").fillna(0.0)
+    latest_ts = df["timestamp"].max()
+    current_start = latest_ts - pd.Timedelta(days=window_days)
+    previous_start = latest_ts - pd.Timedelta(days=window_days * 2)
+
+    rows: list[dict[str, Any]] = []
+    for provider, provider_df in df.groupby("provider"):
+        current_cost = float(provider_df[provider_df["timestamp"] >= current_start]["cost_usd"].sum())
+        previous_mask = (provider_df["timestamp"] >= previous_start) & (
+            provider_df["timestamp"] < current_start
+        )
+        previous_cost = float(provider_df[previous_mask]["cost_usd"].sum())
+        delta = current_cost - previous_cost
+        if previous_cost <= 0:
+            delta_pct = 100.0 if current_cost > 0 else 0.0
+        else:
+            delta_pct = (delta / previous_cost) * 100.0
+
+        if delta < 0:
+            trend = "Reduced"
+        elif delta > 0:
+            trend = "Increased"
+        else:
+            trend = "Flat"
+
+        rows.append(
+            {
+                "provider": provider,
+                "current_period_cost": current_cost,
+                "previous_period_cost": previous_cost,
+                "cost_delta": delta,
+                "cost_delta_pct": delta_pct,
+                "trend": trend,
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns).sort_values("current_period_cost", ascending=False)
+
+
+def provider_cost_usage_trend(unified_df: pd.DataFrame, *, freq: str = "D") -> pd.DataFrame:
+    if unified_df.empty:
+        return pd.DataFrame(columns=["period", "provider", "cost_usd", "calls", "total_tokens"])
+
+    df = unified_df.copy()
+    timestamp = pd.to_datetime(df["timestamp"], utc=True).dt.tz_localize(None)
+    df["period"] = timestamp.dt.floor("D").dt.to_period(freq).dt.to_timestamp()
+    df["cost_usd"] = pd.to_numeric(df["cost_usd"], errors="coerce").fillna(0.0)
+    df["calls"] = pd.to_numeric(df["calls"], errors="coerce").fillna(0.0)
+    df["total_tokens"] = pd.to_numeric(df["total_tokens"], errors="coerce").fillna(0.0)
+
+    return (
+        df.groupby(["period", "provider"], as_index=False)
+        .agg(
+            cost_usd=("cost_usd", "sum"),
+            calls=("calls", "sum"),
+            total_tokens=("total_tokens", "sum"),
+        )
+        .sort_values(["period", "provider"])
+    )
+
+
+def observed_capacity_metrics(unified_df: pd.DataFrame, *, bucket_width: str) -> pd.DataFrame:
+    columns = [
+        "provider",
+        "model",
+        "max_tpm",
+        "max_rpm",
+        "max_tpd",
+        "max_rpd",
+        "total_tokens",
+        "total_calls",
+    ]
+    if unified_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    minutes_per_bucket = 60.0 if bucket_width == "1h" else 1440.0
+    df = unified_df.copy()
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df["calls"] = pd.to_numeric(df["calls"], errors="coerce").fillna(0.0)
+    df["total_tokens"] = pd.to_numeric(df["total_tokens"], errors="coerce").fillna(0.0)
+    df["tpm"] = df["total_tokens"] / minutes_per_bucket
+    df["rpm"] = df["calls"] / minutes_per_bucket
+    df["day"] = df["timestamp"].dt.floor("D")
+
+    daily = (
+        df.groupby(["provider", "model", "day"], as_index=False)
+        .agg(daily_tokens=("total_tokens", "sum"), daily_calls=("calls", "sum"))
+    )
+    daily_peaks = (
+        daily.groupby(["provider", "model"], as_index=False)
+        .agg(max_tpd=("daily_tokens", "max"), max_rpd=("daily_calls", "max"))
+    )
+
+    bucket_peaks = (
+        df.groupby(["provider", "model"], as_index=False)
+        .agg(
+            max_tpm=("tpm", "max"),
+            max_rpm=("rpm", "max"),
+            total_tokens=("total_tokens", "sum"),
+            total_calls=("calls", "sum"),
+        )
+    )
+
+    result = bucket_peaks.merge(daily_peaks, on=["provider", "model"], how="left")
+    return result[columns].sort_values(["provider", "max_tpm"], ascending=[True, False])
+
+
+def apply_openai_rate_limits(
+    capacity_df: pd.DataFrame,
+    openai_project_rate_limits_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if capacity_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "provider",
+                "model",
+                "max_tpm",
+                "max_rpm",
+                "max_tpd",
+                "max_rpd",
+                "tpm_limit",
+                "rpm_limit",
+                "tpd_limit",
+                "rpd_limit",
+                "tpm_utilization_pct",
+                "rpm_utilization_pct",
+                "status",
+            ]
+        )
+
+    df = capacity_df.copy()
+    df["tpm_limit"] = np.nan
+    df["rpm_limit"] = np.nan
+    df["tpd_limit"] = np.nan
+    df["rpd_limit"] = np.nan
+
+    if not openai_project_rate_limits_df.empty:
+        limits_df = openai_project_rate_limits_df.copy()
+        limits_df["model"] = limits_df["model"].astype(str)
+        model_limits = (
+            limits_df.groupby("model", as_index=False)
+            .agg(
+                tpm_limit=("tpm_limit", "max"),
+                rpm_limit=("rpm_limit", "max"),
+                tpd_limit=("tpd_limit", "max"),
+                rpd_limit=("rpd_limit", "max"),
+            )
+            .set_index("model")
+        )
+
+        openai_mask = df["provider"] == "openai"
+        for idx in df[openai_mask].index:
+            model = str(df.at[idx, "model"])
+            if model not in model_limits.index:
+                continue
+            limit_row = model_limits.loc[model]
+            df.at[idx, "tpm_limit"] = float(limit_row.get("tpm_limit", np.nan))
+            df.at[idx, "rpm_limit"] = float(limit_row.get("rpm_limit", np.nan))
+            df.at[idx, "tpd_limit"] = float(limit_row.get("tpd_limit", np.nan))
+            df.at[idx, "rpd_limit"] = float(limit_row.get("rpd_limit", np.nan))
+
+    df["tpm_utilization_pct"] = (df["max_tpm"] / df["tpm_limit"]) * 100.0
+    df["rpm_utilization_pct"] = (df["max_rpm"] / df["rpm_limit"]) * 100.0
+    df["tpm_utilization_pct"] = df["tpm_utilization_pct"].replace([np.inf, -np.inf], np.nan)
+    df["rpm_utilization_pct"] = df["rpm_utilization_pct"].replace([np.inf, -np.inf], np.nan)
+
+    statuses: list[str] = []
+    for _, row in df.iterrows():
+        util_values = [
+            float(v)
+            for v in [row.get("tpm_utilization_pct"), row.get("rpm_utilization_pct")]
+            if pd.notna(v)
+        ]
+        if not util_values:
+            statuses.append("No Limit Data")
+            continue
+        max_util = max(util_values)
+        if max_util >= 90:
+            statuses.append("High Risk")
+        elif max_util >= 70:
+            statuses.append("Watch")
+        else:
+            statuses.append("Healthy")
+    df["status"] = statuses
+
+    return df.sort_values(["provider", "status", "max_tpm"], ascending=[True, True, False])
+
+
 def model_cost_breakdown(unified_df: pd.DataFrame, *, top_n: int = 25) -> pd.DataFrame:
     if unified_df.empty:
         return pd.DataFrame(

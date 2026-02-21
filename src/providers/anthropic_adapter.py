@@ -587,12 +587,13 @@ def _extract_input_tokens(record: dict[str, Any]) -> float:
 
 
 def _extract_cost_usd(record: dict[str, Any]) -> float:
+    # Anthropic cost report `amount` is in cents.
     if record.get("amount") is not None:
         amount = record.get("amount")
         if isinstance(amount, dict):
             value = amount.get("value")
-            return _to_float(value)
-        return _to_float(amount)
+            return _to_float(value) / 100.0
+        return _to_float(amount) / 100.0
 
     if record.get("cost") is not None:
         return _to_float(record.get("cost"))

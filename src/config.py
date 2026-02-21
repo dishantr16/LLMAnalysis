@@ -14,6 +14,8 @@ USAGE_AUDIO_TRANSCRIPTIONS_ENDPOINT = "/organization/usage/audio_transcriptions"
 USAGE_VECTOR_STORES_ENDPOINT = "/organization/usage/vector_stores"
 USAGE_CODE_INTERPRETER_ENDPOINT = "/organization/usage/code_interpreter_sessions"
 COSTS_ENDPOINT = "/organization/costs"
+OPENAI_PROJECTS_ENDPOINT = "/organization/projects"
+OPENAI_PROJECT_RATE_LIMITS_ENDPOINT_TEMPLATE = "/organization/projects/{project_id}/rate_limits"
 ANTHROPIC_USAGE_REPORT_MESSAGES_ENDPOINT = "/organizations/usage_report/messages"
 ANTHROPIC_COST_REPORT_ENDPOINT = "/organizations/cost_report"
 
@@ -35,6 +37,9 @@ USAGE_ENDPOINT_LABELS = {
     "audio_transcriptions": "Audio Transcription",
     "vector_stores": "Vector Stores",
     "code_interpreter_sessions": "Code Interpreter Sessions",
+    "openai_project_rate_limits": "OpenAI Project Rate Limits",
+    "usage_report_messages": "Usage Report Messages",
+    "cost_report": "Cost Report",
 }
 
 DEFAULT_LOOKBACK_DAYS = 30

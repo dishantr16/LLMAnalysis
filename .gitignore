@@ -1,0 +1,10 @@
+.env
+.claude
+__pycache__/
+venv/
+.pytest_cache/
+.vscode/
+.DS_Store
+.idea/
+.cursor/
+.cursor/

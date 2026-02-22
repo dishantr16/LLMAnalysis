@@ -41,7 +41,7 @@ Streamlit dashboard that pulls OpenAI, Anthropic, and Groq usage/cost signals an
 - Capacity & limits analytics:
   - Observed `TPM`, `RPM`, `TPD`, `RPD` (peak)
   - OpenAI project/model rate limit fetch + utilization status
-  - Compute load proxy (estimated from utilization; not direct GPU telemetry)
+  - GPU utilization (static dummy placeholder)
 - Model intelligence:
   - Model-fit matrix (best-suited-for, reasoning/latency/cost profiles)
   - Migration recommendation simulator with projected spend delta
@@ -67,6 +67,7 @@ Streamlit dashboard that pulls OpenAI, Anthropic, and Groq usage/cost signals an
 - `src/ui.py`: Streamlit layout helpers
 - `docs/llm-cost-analysis-poc-plan.md`: implementation plan
 - `docs/multi-provider-review-and-gap-analysis.md`: detailed review and gap mapping
+- `docs/custom-llm-cost-discovery-rnd-template.md`: custom LLM cost discovery schema, formulas, and 2-week R&D plan
 - `tests/`: unit tests
 
 ## Setup

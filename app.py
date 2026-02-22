@@ -34,6 +34,8 @@ from src.analytics import (
     unified_cost_kpis,
 )
 from src.charts import (
+    advisor_candidates_chart,
+    advisor_category_score_chart,
     capacity_utilization_chart,
     cost_trend_chart,
     cost_reduction_chart,
@@ -53,6 +55,7 @@ from src.charts import (
 )
 from src.config import (
     CACHE_TTL_SECONDS,
+    DUMMY_GPU_UTILIZATION_PCT,
     ENV_ANTHROPIC_ADMIN_KEY,
     ENV_GROQ_API_KEY,
     ENV_OPENAI_ADMIN_KEY,
@@ -67,6 +70,7 @@ from src.model_intelligence import (
     list_provider_models,
     recommend_migration,
 )
+from src.model_advisor import build_usage_workload_profile, run_ai_model_advisor
 from src.providers import (
     AnthropicProviderAdapter,
     AzureOpenAIProviderAdapter,
@@ -154,8 +158,8 @@ def render_overview_tab(usage_df: pd.DataFrame, cost_df: pd.DataFrame, group_by:
     daily_usage = aggregate_usage(usage_df, "D")
     daily_cost = aggregate_cost(cost_df, "D")
     col1, col2 = st.columns(2)
-    col1.plotly_chart(usage_trend_chart(daily_usage, "Daily Token Usage"), use_container_width=True)
-    col2.plotly_chart(cost_trend_chart(daily_cost, "Daily Reported Cost"), use_container_width=True)
+    col1.plotly_chart(usage_trend_chart(daily_usage, "Daily Token Usage"), width="stretch")
+    col2.plotly_chart(cost_trend_chart(daily_cost, "Daily Reported Cost"), width="stretch")
 
     st.subheader("Weekly / Monthly / Yearly")
     trend_tabs = st.tabs(["Weekly", "Monthly", "Yearly"])
@@ -167,33 +171,33 @@ def render_overview_tab(usage_df: pd.DataFrame, cost_df: pd.DataFrame, group_by:
             tcol1, tcol2 = st.columns(2)
             tcol1.plotly_chart(
                 usage_trend_chart(freq_usage, f"{label} Token Usage"),
-                use_container_width=True,
+                width="stretch",
             )
             tcol2.plotly_chart(
                 cost_trend_chart(freq_cost, f"{label} Reported Cost"),
-                use_container_width=True,
+                width="stretch",
             )
 
     st.subheader("Model Analysis")
     mcol1, mcol2 = st.columns(2)
-    mcol1.plotly_chart(model_cost_chart(model_summary), use_container_width=True)
-    mcol2.plotly_chart(model_tokens_chart(model_summary), use_container_width=True)
+    mcol1.plotly_chart(model_cost_chart(model_summary), width="stretch")
+    mcol2.plotly_chart(model_tokens_chart(model_summary), width="stretch")
 
     mcol3, mcol4 = st.columns(2)
-    mcol3.plotly_chart(token_distribution_pie(token_distribution_df), use_container_width=True)
-    mcol4.plotly_chart(requests_by_model_chart(model_summary), use_container_width=True)
+    mcol3.plotly_chart(token_distribution_pie(token_distribution_df), width="stretch")
+    mcol4.plotly_chart(requests_by_model_chart(model_summary), width="stretch")
 
     st.subheader("Billing Breakdown")
     bcol1, bcol2 = st.columns(2)
-    bcol1.plotly_chart(project_cost_chart(project_cost_df), use_container_width=True)
-    bcol2.dataframe(line_item_cost_df, use_container_width=True, hide_index=True)
+    bcol1.plotly_chart(project_cost_chart(project_cost_df), width="stretch")
+    bcol2.dataframe(line_item_cost_df, width="stretch", hide_index=True)
 
     if group_by:
         st.subheader("Organization Dimensions (Completions)")
         for dimension in group_by:
             summary_df = build_dimension_summary(usage_df, dimension)
             st.markdown(f"**Top {dimension} by token usage**")
-            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+            st.dataframe(summary_df, width="stretch", hide_index=True)
 
     st.subheader("Export & Raw Data")
     usage_csv = usage_df.to_csv(index=False).encode("utf-8")
@@ -214,10 +218,10 @@ def render_overview_tab(usage_df: pd.DataFrame, cost_df: pd.DataFrame, group_by:
     )
 
     with st.expander("Raw Completions Usage Data", expanded=False):
-        st.dataframe(usage_df, use_container_width=True, hide_index=True)
+        st.dataframe(usage_df, width="stretch", hide_index=True)
 
     with st.expander("Raw Cost Data", expanded=False):
-        st.dataframe(cost_df, use_container_width=True, hide_index=True)
+        st.dataframe(cost_df, width="stretch", hide_index=True)
 
 
 
@@ -252,9 +256,9 @@ def render_provider_insights_tab(unified_df: pd.DataFrame) -> None:
     c1, c2 = st.columns(2)
     c1.plotly_chart(
         monthly_budget_chart(monthly_df, monthly_budget=monthly_budget),
-        use_container_width=True,
+        width="stretch",
     )
-    c2.plotly_chart(provider_spend_chart(provider_df), use_container_width=True)
+    c2.plotly_chart(provider_spend_chart(provider_df), width="stretch")
 
     c3, c4 = st.columns(2)
     c3.plotly_chart(
@@ -263,7 +267,7 @@ def render_provider_insights_tab(unified_df: pd.DataFrame) -> None:
             metric="cost_usd",
             title="Provider Cost Trend (Daily)",
         ),
-        use_container_width=True,
+        width="stretch",
     )
     c4.plotly_chart(
         provider_metric_trend_chart(
@@ -271,7 +275,7 @@ def render_provider_insights_tab(unified_df: pd.DataFrame) -> None:
             metric="calls",
             title="Provider Request Trend (Daily)",
         ),
-        use_container_width=True,
+        width="stretch",
     )
 
     st.markdown("### Top Models by Cost")
@@ -286,7 +290,7 @@ def render_provider_insights_tab(unified_df: pd.DataFrame) -> None:
     for tab, (label, days) in zip(window_tabs, window_specs):
         with tab:
             top_models_df = top_models_by_cost_for_window(unified_df, lookback_days=days, top_n=10)
-            st.plotly_chart(top_models_cost_chart(top_models_df), use_container_width=True)
+            st.plotly_chart(top_models_cost_chart(top_models_df), width="stretch")
 
             window_start = latest_ts - pd.Timedelta(days=days)
             window_df = udf[udf["timestamp"] >= window_start]
@@ -332,14 +336,14 @@ def render_provider_insights_tab(unified_df: pd.DataFrame) -> None:
                         "Avg Cost/Call",
                     ]
                 ],
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
     st.markdown("### AI Cost Reduction Trend (7d vs Previous 7d)")
     st.plotly_chart(
         cost_reduction_chart(reduction_df, title="Cost Delta Percentage by Provider"),
-        use_container_width=True,
+        width="stretch",
     )
     st.dataframe(
         reduction_df.rename(
@@ -352,12 +356,12 @@ def render_provider_insights_tab(unified_df: pd.DataFrame) -> None:
                 "trend": "Trend",
             }
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
     st.markdown("### Model Cost Breakdown")
-    st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
+    st.dataframe(breakdown_df, width="stretch", hide_index=True)
 
 
 
@@ -376,7 +380,7 @@ def render_capacity_limits_tab(
     st.caption(
         "Observed TPM/RPM/TPD/RPD are derived from fetched usage buckets. OpenAI limits are API-fetched. "
         "Anthropic and Groq limit caps are not exposed via a comparable org limits API in this POC. "
-        "Compute Load Proxy is an estimated utilization index, not direct GPU telemetry."
+        "GPU utilization shown here is a static dummy placeholder."
     )
 
     observed_df = observed_capacity_metrics(unified_df, bucket_width=bucket_width)
@@ -394,16 +398,9 @@ def render_capacity_limits_tab(
         else 0.0
     )
     k3.metric("Highest OpenAI TPM Utilization", f"{max_openai_util:.1f}%")
-    util_candidates = pd.concat(
-        [
-            pd.to_numeric(capacity_df.get("tpm_utilization_pct"), errors="coerce"),
-            pd.to_numeric(capacity_df.get("rpm_utilization_pct"), errors="coerce"),
-        ]
-    ).dropna()
-    compute_load_proxy = float(util_candidates.mean()) if not util_candidates.empty else 0.0
-    k4.metric("Compute Load Proxy", f"{compute_load_proxy:.1f}%")
+    k4.metric("GPU Utilization (Dummy)", f"{DUMMY_GPU_UTILIZATION_PCT:.1f}%")
 
-    st.plotly_chart(capacity_utilization_chart(capacity_df), use_container_width=True)
+    st.plotly_chart(capacity_utilization_chart(capacity_df), width="stretch")
 
     display_df = capacity_df.copy()
     for col in ["max_tpm", "max_rpm", "tpm_utilization_pct", "rpm_utilization_pct"]:
@@ -431,7 +428,7 @@ def render_capacity_limits_tab(
                 "status": "Status",
             }
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -439,7 +436,7 @@ def render_capacity_limits_tab(
         if openai_project_rate_limits_df.empty:
             st.info("No OpenAI project rate limit rows returned.")
         else:
-            st.dataframe(openai_project_rate_limits_df, use_container_width=True, hide_index=True)
+            st.dataframe(openai_project_rate_limits_df, width="stretch", hide_index=True)
 
 
 def render_model_intelligence_tab(unified_df: pd.DataFrame) -> None:
@@ -453,7 +450,7 @@ def render_model_intelligence_tab(unified_df: pd.DataFrame) -> None:
         return
 
     intelligence_df = build_model_intelligence_table(unified_df)
-    st.dataframe(intelligence_df, use_container_width=True, hide_index=True)
+    st.dataframe(intelligence_df, width="stretch", hide_index=True)
 
     model_pairs = list_provider_models(unified_df)
     if not model_pairs:
@@ -525,6 +522,202 @@ def render_model_intelligence_tab(unified_df: pd.DataFrame) -> None:
     )
 
 
+def render_ai_model_advisor_tab(unified_df: pd.DataFrame) -> None:
+    st.subheader("AI Model Advisor")
+    st.caption(
+        "Personalized model recommendations using observed usage, token mix, spend, and workload constraints. "
+        "Current scope: OpenAI + Anthropic."
+    )
+
+    if unified_df.empty:
+        st.info("No provider rows available for advisor analysis.")
+        return
+
+    advisor_df = unified_df[unified_df["provider"].isin(["openai", "anthropic"])].copy()
+    if advisor_df.empty:
+        st.info("Advisor currently supports OpenAI and Anthropic rows only.")
+        return
+
+    profile = build_usage_workload_profile(advisor_df)
+    provider_label_map = {"openai": "OpenAI", "anthropic": "Anthropic"}
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Current Model", str(profile["current_model"]))
+    current_provider = str(profile["current_provider"]).lower()
+    k2.metric("Current Provider", provider_label_map.get(current_provider, current_provider.title()))
+    k3.metric("Calls / Day (Avg)", f"{profile['avg_calls_per_day']:.1f}")
+    k4.metric("Observed CPI", f"${profile['current_cpi_usd']:.6f}")
+    k5.metric("Projected Monthly Spend", f"${profile['estimated_monthly_spend_usd']:.2f}")
+
+    st.caption(
+        "Advisor uses historical aggregates only; prompt/response text and task labels are not available from these APIs."
+    )
+
+    objective_options = {
+        "balanced": "Balanced",
+        "min_cost": "Minimize Cost",
+        "max_quality": "Maximize Quality",
+    }
+    complexity_options = ["low", "medium", "high", "very_high"]
+    task_options = {
+        "general_assistant": "General Assistant",
+        "classification_routing": "Classification / Routing",
+        "coding_assistant": "Coding Assistant",
+        "document_analysis": "Document Analysis",
+        "multimodal": "Multimodal",
+    }
+
+    c1, c2, c3 = st.columns(3)
+    objective = c1.selectbox(
+        "Optimization Objective",
+        options=list(objective_options.keys()),
+        format_func=lambda key: objective_options[key],
+        index=0,
+    )
+    complexity_level = c2.selectbox(
+        "Workload Complexity",
+        options=complexity_options,
+        format_func=lambda value: value.replace("_", " ").title(),
+        index=1,
+    )
+    primary_task = c3.selectbox(
+        "Primary Task Pattern",
+        options=list(task_options.keys()),
+        format_func=lambda key: task_options[key],
+        index=0,
+    )
+
+    d1, d2, d3 = st.columns(3)
+    max_latency_default = int(min(2500, max(150, round(profile["avg_total_tokens_per_call"] * 0.3))))
+    max_latency_ms = d1.slider(
+        "Max Latency (ms)",
+        min_value=100,
+        max_value=3000,
+        value=max_latency_default,
+        step=50,
+    )
+    budget_default = float(max(50.0, round(profile["estimated_monthly_spend_usd"], 2)))
+    monthly_budget_usd = d2.number_input(
+        "Monthly Budget (USD)",
+        min_value=0.0,
+        value=budget_default,
+        step=50.0,
+        help="Set to 0 to disable budget pressure in scoring.",
+    )
+    allow_cross_provider = d3.checkbox(
+        "Allow Cross-Provider Recommendation",
+        value=True,
+        help="When disabled, advisor keeps recommendations in the current provider family.",
+    )
+
+    required_capabilities = st.multiselect(
+        "Required Capabilities",
+        options=["reasoning", "code", "vision", "long_context", "research"],
+        default=[],
+    )
+    preferred_providers = st.multiselect(
+        "Providers to Consider",
+        options=["openai", "anthropic"],
+        default=["openai", "anthropic"],
+    )
+
+    if not preferred_providers:
+        st.warning("Select at least one provider to run advisor scoring.")
+        return
+
+    result = run_ai_model_advisor(
+        advisor_df,
+        objective=objective,
+        complexity_level=complexity_level,
+        max_latency_ms=max_latency_ms,
+        monthly_budget_usd=monthly_budget_usd if monthly_budget_usd > 0 else None,
+        required_capabilities=tuple(required_capabilities),
+        primary_task=primary_task,
+        preferred_providers=tuple(preferred_providers),
+        allow_cross_provider=allow_cross_provider,
+    )
+
+    if "error" in result:
+        st.warning(str(result["error"]))
+        return
+
+    primary = result["primary_recommendation"]
+    p1, p2, p3, p4, p5 = st.columns(5)
+    p1.metric("Recommended Category", str(primary["recommended_category"]))
+    p2.metric("Recommended Model", str(primary["recommended_model"]))
+    p3.metric("Provider", str(primary["provider"]))
+    p4.metric("Confidence Score", f"{float(primary['confidence_score']):.1f}%")
+    p5.metric("Estimated Monthly Cost", f"${float(primary['estimated_monthly_cost_usd']):.2f}")
+
+    s1, s2 = st.columns(2)
+    s1.metric("Estimated Monthly Savings", f"${float(primary['estimated_monthly_savings_usd']):.2f}")
+    s2.metric("Estimated Savings (%)", f"{float(primary['estimated_monthly_savings_pct']):+.1f}%")
+
+    st.plotly_chart(
+        advisor_category_score_chart(result.get("category_scores", {})),
+        width="stretch",
+    )
+
+    rc1, rc2 = st.columns(2)
+    with rc1:
+        st.markdown("### Recommendation Reasoning")
+        for message in primary.get("reasoning", []):
+            st.write(f"- {message}")
+    with rc2:
+        st.markdown("### Trade-offs")
+        for message in primary.get("trade_offs", []):
+            st.write(f"- {message}")
+
+    candidates_df = result.get("candidates_df", pd.DataFrame())
+    if not candidates_df.empty:
+        st.markdown("### Candidate Comparison")
+        st.plotly_chart(advisor_candidates_chart(candidates_df), width="stretch")
+
+        display_columns = [
+            "category",
+            "model",
+            "provider",
+            "advisor_score",
+            "estimated_monthly_cost_usd",
+            "estimated_cpi_usd",
+            "latency_ms",
+            "capability_fit",
+            "cost_score",
+            "cost_source",
+        ]
+        available_cols = [col for col in display_columns if col in candidates_df.columns]
+        st.dataframe(
+            candidates_df[available_cols].rename(
+                columns={
+                    "category": "Category",
+                    "model": "Model",
+                    "provider": "Provider",
+                    "advisor_score": "Advisor Score (%)",
+                    "estimated_monthly_cost_usd": "Estimated Monthly Cost (USD)",
+                    "estimated_cpi_usd": "Estimated CPI (USD)",
+                    "latency_ms": "Latency (ms)",
+                    "capability_fit": "Capability Fit (%)",
+                    "cost_score": "Cost Score (%)",
+                    "cost_source": "Cost Source",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+    alternatives = result.get("alternatives", [])
+    if alternatives:
+        st.markdown("### Alternatives")
+        st.dataframe(pd.DataFrame(alternatives), width="stretch", hide_index=True)
+
+    with st.expander("Advisor Inputs & Assumptions", expanded=False):
+        st.json(result.get("inputs_used", {}))
+        st.caption(
+            "Model pricing/performance metadata in advisor catalog is heuristic and should be validated "
+            "with your own quality and latency benchmarks before production migration."
+        )
+
+
 def render_usage_explorer_tab(aux_usage_frames: dict[str, pd.DataFrame]) -> None:
     st.subheader("Additional OpenAI Usage Endpoints")
     st.caption(
@@ -592,7 +785,7 @@ def render_usage_explorer_tab(aux_usage_frames: dict[str, pd.DataFrame]) -> None
             metric=metric,
             title=f"{USAGE_ENDPOINT_LABELS.get(selected_dataset, selected_dataset)} Daily {metric.replace('_', ' ').title()}",
         ),
-        use_container_width=True,
+        width="stretch",
     )
     col2.plotly_chart(
         generic_dimension_bar_chart(
@@ -601,7 +794,7 @@ def render_usage_explorer_tab(aux_usage_frames: dict[str, pd.DataFrame]) -> None
             metric=metric,
             title=f"Top {selected_dimension.replace('_', ' ').title()} by {metric.replace('_', ' ').title()}",
         ),
-        use_container_width=True,
+        width="stretch",
     )
 
     dataset_csv = dataset_df.to_csv(index=False).encode("utf-8")
@@ -613,7 +806,7 @@ def render_usage_explorer_tab(aux_usage_frames: dict[str, pd.DataFrame]) -> None
     )
 
     with st.expander("Raw Endpoint Data", expanded=False):
-        st.dataframe(dataset_df, use_container_width=True, hide_index=True)
+        st.dataframe(dataset_df, width="stretch", hide_index=True)
 
 
 
@@ -659,7 +852,7 @@ def render_forecasts_tab(usage_df: pd.DataFrame, cost_df: pd.DataFrame) -> None:
             metric="amount",
             title="Cost Forecast (30 Days)",
         ),
-        use_container_width=True,
+        width="stretch",
     )
     fcol2.plotly_chart(
         forecast_chart(
@@ -667,7 +860,7 @@ def render_forecasts_tab(usage_df: pd.DataFrame, cost_df: pd.DataFrame) -> None:
             metric="total_tokens",
             title="Token Forecast (30 Days)",
         ),
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -812,6 +1005,7 @@ def main() -> None:
             "Provider Insights",
             "Capacity & Limits",
             "Model Intelligence",
+            "AI Model Advisor",
             "Usage Explorer",
             "Forecasts (beta)",
             # "Future Roadmap",
@@ -834,8 +1028,10 @@ def main() -> None:
     with tabs[3]:
         render_model_intelligence_tab(unified_df)
     with tabs[4]:
-        render_usage_explorer_tab(aux_usage_frames)
+        render_ai_model_advisor_tab(unified_df)
     with tabs[5]:
+        render_usage_explorer_tab(aux_usage_frames)
+    with tabs[6]:
         if usage_df.empty and cost_df.empty:
             st.info("Forecasts currently run on OpenAI usage/cost series.")
         else:

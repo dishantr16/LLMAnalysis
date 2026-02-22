@@ -44,7 +44,7 @@
   - observed RPD (peak)
 - OpenAI project/model limits are fetched via Admin API and joined to observed load.
 - Utilization status is labeled (`Healthy`, `Watch`, `High Risk`, `No Limit Data`).
-- Compute load proxy is surfaced as an estimated utilization index (not provider GPU telemetry).
+- GPU utilization is surfaced as a static dummy placeholder for this POC.
 
 ### 5. Model Intelligence & Migration Support
 - Model intelligence tab added with:

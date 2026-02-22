@@ -368,3 +368,73 @@ def capacity_utilization_chart(
     fig.add_hline(y=100, line_dash="dash", line_color="#b91c1c")
     fig.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10), legend_title_text="")
     return fig
+
+
+def advisor_category_score_chart(category_scores: dict[str, float]) -> go.Figure:
+    if not category_scores:
+        return empty_figure("No advisor category scores")
+
+    plot_df = pd.DataFrame(
+        [{"category": str(category), "score_pct": float(score)} for category, score in category_scores.items()]
+    )
+    if plot_df.empty:
+        return empty_figure("No advisor category scores")
+    sorted_df = plot_df.sort_values("score_pct", ascending=False)
+
+    fig = px.bar(
+        sorted_df,
+        x="category",
+        y="score_pct",
+        color="category",
+        title="Category Fit Scores",
+        labels={"category": "Category", "score_pct": "Score (%)"},
+        template=PLOTLY_TEMPLATE,
+    )
+    fig.update_traces(text=sorted_df["score_pct"].map(lambda value: f"{value:.1f}%"), textposition="outside")
+    fig.update_layout(
+        height=360,
+        margin=dict(l=10, r=10, t=50, b=10),
+        yaxis=dict(range=[0, 100]),
+        showlegend=False,
+    )
+    return fig
+
+
+def advisor_candidates_chart(candidates_df: pd.DataFrame) -> go.Figure:
+    if candidates_df.empty:
+        return empty_figure("No advisor candidate data")
+
+    required_cols = {"estimated_monthly_cost_usd", "advisor_score", "provider", "model"}
+    if not required_cols.issubset(set(candidates_df.columns)):
+        return empty_figure("Advisor candidate schema mismatch")
+
+    plot_df = candidates_df.copy().head(15)
+    plot_df["provider"] = plot_df["provider"].astype(str)
+    plot_df["model"] = plot_df["model"].astype(str)
+    plot_df["model_provider"] = plot_df["model"] + " (" + plot_df["provider"] + ")"
+
+    fig = px.scatter(
+        plot_df,
+        x="estimated_monthly_cost_usd",
+        y="advisor_score",
+        color="provider",
+        symbol="category" if "category" in plot_df.columns else None,
+        hover_name="model_provider",
+        hover_data={
+            "estimated_cpi_usd": ":.6f" if "estimated_cpi_usd" in plot_df.columns else False,
+            "latency_ms": True if "latency_ms" in plot_df.columns else False,
+            "capability_fit": ":.1f" if "capability_fit" in plot_df.columns else False,
+            "cost_source": True if "cost_source" in plot_df.columns else False,
+            "advisor_score": ":.1f",
+            "estimated_monthly_cost_usd": ":.2f",
+        },
+        title="Candidate Models: Advisor Score vs Estimated Monthly Cost",
+        labels={
+            "estimated_monthly_cost_usd": "Estimated Monthly Cost (USD)",
+            "advisor_score": "Advisor Score (%)",
+            "provider": "Provider",
+        },
+        template=PLOTLY_TEMPLATE,
+    )
+    fig.update_layout(height=380, margin=dict(l=10, r=10, t=50, b=10), legend_title_text="")
+    return fig

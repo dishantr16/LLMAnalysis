@@ -1,0 +1,94 @@
+# Model Metadata — Latency & Quality Scores
+#
+# Edit this file to update latency estimates and quality scores
+# without changing code. These values are used by the recommendation
+# engine for multi-factor ranking (AC-4.2).
+#
+# latency_ms:    Estimated median response latency in milliseconds.
+#                Should be updated with observed latency data when available.
+#
+# quality_score: Heuristic quality score (0.0–1.0).
+#                Ideally derived from published benchmarks (MMLU, HumanEval,
+#                Chatbot Arena ELO). Currently author estimates.
+
+schema_version: "1.0"
+updated_at: "2026-02-24"
+
+providers:
+  openai:
+    models:
+      gpt-4.1-nano:
+        latency_ms: 120
+        quality_score: 0.66
+      gpt-4.1-mini:
+        latency_ms: 200
+        quality_score: 0.78
+      gpt-4.1:
+        latency_ms: 340
+        quality_score: 0.87
+      gpt-4o-mini:
+        latency_ms: 180
+        quality_score: 0.73
+      gpt-4o:
+        latency_ms: 360
+        quality_score: 0.88
+      o4-mini:
+        latency_ms: 600
+        quality_score: 0.85
+      o3-mini:
+        latency_ms: 700
+        quality_score: 0.84
+      o3:
+        latency_ms: 1500
+        quality_score: 0.97
+      o3-pro:
+        latency_ms: 2500
+        quality_score: 0.98
+      gpt-5:
+        latency_ms: 850
+        quality_score: 0.96
+      gpt-5.2:
+        latency_ms: 850
+        quality_score: 0.96
+
+  anthropic:
+    models:
+      claude-3-haiku:
+        latency_ms: 150
+        quality_score: 0.68
+      claude-3.5-haiku:
+        latency_ms: 220
+        quality_score: 0.75
+      claude-3.5-sonnet:
+        latency_ms: 440
+        quality_score: 0.90
+      claude-sonnet-4-20250514:
+        latency_ms: 420
+        quality_score: 0.92
+      claude-3.7-sonnet:
+        latency_ms: 500
+        quality_score: 0.91
+      claude-3-opus:
+        latency_ms: 1200
+        quality_score: 0.95
+      claude-opus-4-20250514:
+        latency_ms: 1100
+        quality_score: 0.96
+
+  groq:
+    models:
+      llama-3.1-8b-instant:
+        latency_ms: 50
+        quality_score: 0.55
+      llama-3.3-70b-versatile:
+        latency_ms: 120
+        quality_score: 0.72
+      meta-llama/llama-4-scout-17b-16e-instruct:
+        latency_ms: 80
+        quality_score: 0.65
+      meta-llama/llama-4-maverick-17b-128e-instruct:
+        latency_ms: 100
+        quality_score: 0.70
+      qwen/qwen3-32b:
+        latency_ms: 90
+        quality_score: 0.68

@@ -1,0 +1,235 @@
+# LLM Pricing Registry — External Configuration
+#
+# This file is the SECOND fallback layer (after live LiteLLM fetch).
+# Edit this file to override or add custom pricing without changing code.
+# All rates are USD per 1 MILLION tokens.
+#
+# To add a new model: add it under the correct provider with at minimum
+# `pricing.input` and `pricing.output`.
+
+schema_version: "1.0"
+updated_at: "2026-02-24"
+
+providers:
+  openai:
+    models:
+      gpt-4.1:
+        family: gpt-4.1
+        pricing:
+          input: 2.00
+          output: 8.00
+          cached_input: 0.50
+        context_window: 1000000
+        supports_vision: true
+        notes: "1M context, code-heavy workloads"
+
+      gpt-4.1-mini:
+        family: gpt-4.1
+        pricing:
+          input: 0.40
+          output: 1.60
+          cached_input: 0.10
+        context_window: 1000000
+        supports_vision: true
+
+      gpt-4.1-nano:
+        family: gpt-4.1
+        pricing:
+          input: 0.10
+          output: 0.40
+          cached_input: 0.025
+        context_window: 1000000
+        supports_vision: true
+
+      gpt-4o:
+        family: gpt-4o
+        pricing:
+          input: 2.50
+          output: 10.00
+          cached_input: 1.25
+          input_audio: 40.00
+          output_audio: 80.00
+        context_window: 128000
+        supports_vision: true
+        supports_audio: true
+
+      gpt-4o-mini:
+        family: gpt-4o
+        pricing:
+          input: 0.15
+          output: 0.60
+          cached_input: 0.075
+          input_audio: 10.00
+          output_audio: 20.00
+        context_window: 128000
+        supports_vision: true
+        supports_audio: true
+
+      o3:
+        family: o3
+        pricing:
+          input: 2.00
+          output: 8.00
+          cached_input: 0.50
+          reasoning_output: 8.00
+        context_window: 200000
+        supports_reasoning: true
+        supports_vision: true
+        notes: "Updated Feb 2026 — pricing reduced from $10/$40"
+
+      o3-pro:
+        family: o3
+        pricing:
+          input: 20.00
+          output: 80.00
+          cached_input: 5.00
+          reasoning_output: 80.00
+        context_window: 200000
+        supports_reasoning: true
+        supports_vision: true
+
+      o4-mini:
+        family: o4
+        pricing:
+          input: 1.10
+          output: 4.40
+          cached_input: 0.275
+          reasoning_output: 4.40
+        context_window: 200000
+        supports_reasoning: true
+        supports_vision: true
+
+      o3-mini:
+        family: o3
+        pricing:
+          input: 1.10
+          output: 4.40
+          cached_input: 0.55
+          reasoning_output: 4.40
+        context_window: 200000
+        supports_reasoning: true
+        deprecation_date: "2025-07-31"
+
+      gpt-5:
+        family: gpt-5
+        pricing:
+          input: 15.00
+          output: 60.00
+          cached_input: 3.75
+        context_window: 256000
+        supports_vision: true
+        supports_reasoning: true
+
+      gpt-5.2:
+        family: gpt-5
+        pricing:
+          input: 15.00
+          output: 60.00
+          cached_input: 3.75
+        context_window: 256000
+        supports_vision: true
+        supports_reasoning: true
+
+  anthropic:
+    models:
+      claude-sonnet-4-20250514:
+        family: claude-sonnet-4
+        pricing:
+          input: 3.00
+          output: 15.00
+          cached_input: 0.30
+        context_window: 200000
+        supports_vision: true
+
+      claude-3.5-sonnet:
+        family: claude-3.5-sonnet
+        pricing:
+          input: 3.00
+          output: 15.00
+          cached_input: 0.30
+        context_window: 200000
+        supports_vision: true
+
+      claude-3.7-sonnet:
+        family: claude-3.7-sonnet
+        pricing:
+          input: 3.00
+          output: 15.00
+          cached_input: 0.30
+        context_window: 200000
+        supports_vision: true
+        supports_reasoning: true
+
+      claude-opus-4-20250514:
+        family: claude-opus-4
+        pricing:
+          input: 15.00
+          output: 75.00
+          cached_input: 1.50
+        context_window: 200000
+        supports_vision: true
+        supports_reasoning: true
+
+      claude-3-opus:
+        family: claude-opus
+        pricing:
+          input: 15.00
+          output: 75.00
+          cached_input: 1.50
+        context_window: 200000
+        supports_vision: true
+
+      claude-3.5-haiku:
+        family: claude-haiku
+        pricing:
+          input: 0.80
+          output: 4.00
+          cached_input: 0.08
+        context_window: 200000
+        supports_vision: true
+
+      claude-3-haiku:
+        family: claude-haiku
+        pricing:
+          input: 0.25
+          output: 1.25
+          cached_input: 0.03
+        context_window: 200000
+        supports_vision: true
+
+  groq:
+    models:
+      llama-3.1-8b-instant:
+        family: llama-3.1
+        pricing:
+          input: 0.05
+          output: 0.08
+        context_window: 131072
+
+      llama-3.3-70b-versatile:
+        family: llama-3.3
+        pricing:
+          input: 0.59
+          output: 0.79
+        context_window: 131072
+
+      meta-llama/llama-4-scout-17b-16e-instruct:
+        family: llama-4
+        pricing:
+          input: 0.11
+          output: 0.34
+        context_window: 131072
+
+      meta-llama/llama-4-maverick-17b-128e-instruct:
+        family: llama-4
+        pricing:
+          input: 0.20
+          output: 0.60
+        context_window: 131072
+
+      qwen/qwen3-32b:
+        family: qwen3
+        pricing:
+          input: 0.29
+          output: 0.59
+        context_window: 131072

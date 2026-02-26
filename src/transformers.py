@@ -29,6 +29,7 @@ USAGE_COLUMNS = [
     "input_tokens",
     "output_tokens",
     "cached_input_tokens",
+    "reasoning_tokens",
     "input_audio_tokens",
     "output_audio_tokens",
     "requests",
@@ -64,6 +65,11 @@ def build_usage_df(buckets: Iterable[dict[str, Any]]) -> pd.DataFrame:
                     "input_tokens": result.get("input_tokens", 0),
                     "output_tokens": result.get("output_tokens", 0),
                     "cached_input_tokens": result.get("input_cached_tokens", 0),
+                    "reasoning_tokens": result.get(
+                        "reasoning_tokens",
+                        result.get("output_tokens_details", {}).get("reasoning_tokens", 0)
+                        if isinstance(result.get("output_tokens_details"), dict) else 0,
+                    ),
                     "input_audio_tokens": result.get("input_audio_tokens", 0),
                     "output_audio_tokens": result.get("output_audio_tokens", 0),
                     "requests": result.get("num_model_requests", result.get("num_requests", 0)),
@@ -78,6 +84,7 @@ def build_usage_df(buckets: Iterable[dict[str, Any]]) -> pd.DataFrame:
         "input_tokens",
         "output_tokens",
         "cached_input_tokens",
+        "reasoning_tokens",
         "input_audio_tokens",
         "output_audio_tokens",
         "requests",

@@ -54,26 +54,17 @@ ENV_OPENAI_ADMIN_KEY = "OPENAI_ADMIN_KEY"
 ENV_ANTHROPIC_ADMIN_KEY = "ANTHROPIC_ADMIN_KEY"
 ENV_GROQ_API_KEY = "GROQ_API_KEY"
 
-# USD price per 1M tokens. Keep updated manually from official pricing.
-MODEL_PRICING_PER_MILLION = {
-    "gpt-4o": {"input": 2.50, "output": 10.00},
-    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-    "gpt-4.1": {"input": 2.00, "output": 8.00},
-    "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
-    "gpt-4.1-nano": {"input": 0.10, "output": 0.40},
-    "o4-mini": {"input": 1.10, "output": 4.40},
-}
+# ---------------------------------------------------------------------------
+# Legacy pricing maps — kept for backward compatibility.
+# The authoritative pricing source is now src.pricing_registry.PricingRegistry.
+# These maps are auto-populated from the registry at import time.
+# ---------------------------------------------------------------------------
+from src.pricing_registry import get_pricing_registry as _get_registry  # noqa: E402
 
-# USD price per 1M tokens for common Groq models.
-# Keep this map updated from https://console.groq.com/docs/models.
-GROQ_MODEL_PRICING_PER_MILLION = {
-    "llama-3.1-8b-instant": {"input": 0.05, "output": 0.08},
-    "llama-3.3-70b-versatile": {"input": 0.59, "output": 0.79},
-    "openai/gpt-oss-120b": {"input": 0.15, "output": 0.60},
-    "openai/gpt-oss-20b": {"input": 0.075, "output": 0.30},
-    "qwen/qwen3-32b": {"input": 0.29, "output": 0.59},
-    "meta-llama/llama-4-scout-17b-16e-instruct": {"input": 0.11, "output": 0.34},
-    "meta-llama/llama-4-maverick-17b-128e-instruct": {"input": 0.20, "output": 0.60},
-}
+def _build_legacy_pricing_map(provider: str) -> dict[str, dict[str, float]]:
+    return _get_registry().export_as_legacy_map(provider)
+
+MODEL_PRICING_PER_MILLION: dict[str, dict[str, float]] = _build_legacy_pricing_map("openai")
+GROQ_MODEL_PRICING_PER_MILLION: dict[str, dict[str, float]] = _build_legacy_pricing_map("groq")
 
 DIMENSION_OPTIONS = ["model", "project_id", "user_id", "api_key_id"]

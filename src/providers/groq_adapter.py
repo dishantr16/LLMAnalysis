@@ -158,6 +158,8 @@ def build_groq_unified_df(metric_frames: dict[str, pd.DataFrame]) -> pd.DataFram
 
     merged["provider"] = "groq"
     merged["total_tokens"] = merged["input_tokens"] + merged["output_tokens"]
+    merged["cached_input_tokens"] = 0.0
+    merged["reasoning_tokens"] = 0.0
     merged["cost_usd"] = merged.apply(_estimate_groq_cost, axis=1)
     merged["currency"] = "usd"
     merged["cost_source"] = "estimated"
@@ -171,6 +173,8 @@ def build_groq_unified_df(metric_frames: dict[str, pd.DataFrame]) -> pd.DataFram
             "calls",
             "input_tokens",
             "output_tokens",
+            "cached_input_tokens",
+            "reasoning_tokens",
             "total_tokens",
             "cost_usd",
             "currency",

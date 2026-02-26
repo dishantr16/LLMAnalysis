@@ -286,6 +286,8 @@ def build_anthropic_unified_df(usage_df: pd.DataFrame, cost_df: pd.DataFrame) ->
     usage["input_tokens"] = pd.to_numeric(usage["input_tokens"], errors="coerce").fillna(0.0)
     usage["output_tokens"] = pd.to_numeric(usage["output_tokens"], errors="coerce").fillna(0.0)
     usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+    usage["cached_input_tokens"] = 0.0
+    usage["reasoning_tokens"] = 0.0
     usage["cost_usd"] = 0.0
     usage["currency"] = "usd"
     usage["cost_source"] = "unavailable"
@@ -303,6 +305,8 @@ def build_anthropic_unified_df(usage_df: pd.DataFrame, cost_df: pd.DataFrame) ->
             "calls",
             "input_tokens",
             "output_tokens",
+            "cached_input_tokens",
+            "reasoning_tokens",
             "total_tokens",
             "cost_usd",
             "currency",
@@ -349,6 +353,8 @@ def _assign_reported_costs(usage_df: pd.DataFrame, cost_df: pd.DataFrame) -> pd.
                     "calls": 0.0,
                     "input_tokens": 0.0,
                     "output_tokens": 0.0,
+                    "cached_input_tokens": 0.0,
+                    "reasoning_tokens": 0.0,
                     "total_tokens": 0.0,
                     "cost_usd": amount,
                     "currency": "usd",
@@ -405,6 +411,8 @@ def _cost_rows_without_matching_usage(usage_df: pd.DataFrame, cost_df: pd.DataFr
                 "calls": 0.0,
                 "input_tokens": 0.0,
                 "output_tokens": 0.0,
+                "cached_input_tokens": 0.0,
+                "reasoning_tokens": 0.0,
                 "total_tokens": 0.0,
                 "cost_usd": float(row["amount"]),
                 "currency": "usd",
@@ -428,6 +436,8 @@ def _cost_only_unified(cost_df: pd.DataFrame) -> pd.DataFrame:
     grouped["calls"] = 0.0
     grouped["input_tokens"] = 0.0
     grouped["output_tokens"] = 0.0
+    grouped["cached_input_tokens"] = 0.0
+    grouped["reasoning_tokens"] = 0.0
     grouped["total_tokens"] = 0.0
     grouped["currency"] = "usd"
     grouped["cost_source"] = "reported_allocated"
@@ -440,6 +450,8 @@ def _cost_only_unified(cost_df: pd.DataFrame) -> pd.DataFrame:
             "calls",
             "input_tokens",
             "output_tokens",
+            "cached_input_tokens",
+            "reasoning_tokens",
             "total_tokens",
             "cost_usd",
             "currency",

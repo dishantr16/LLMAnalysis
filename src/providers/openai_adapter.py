@@ -7,9 +7,11 @@ from typing import Any
 import pandas as pd
 
 from src.config import MODEL_PRICING_PER_MILLION, USAGE_ENDPOINTS
+from src.pricing_registry import get_pricing_registry
 from src.fetchers import CostQuery, UsageQuery, fetch_cost_buckets, fetch_usage_buckets
 from src.openai_client import OpenAIAPIError, OpenAIAdminClient
 from src.providers.base import ProviderAdapter, ProviderFetchResult, empty_unified_df
+from src.token_normalizer import ReasoningRatioTracker, _is_reasoning_model, _FALLBACK_REASONING_RATIO
 from src.transformers import build_cost_df, build_generic_usage_df, build_usage_df
 
 
@@ -147,9 +149,18 @@ def build_openai_unified_df(usage_df: pd.DataFrame, cost_df: pd.DataFrame) -> pd
     df["calls"] = pd.to_numeric(df["requests"], errors="coerce").fillna(0)
     df["input_tokens"] = pd.to_numeric(df["input_tokens"], errors="coerce").fillna(0)
     df["output_tokens"] = pd.to_numeric(df["output_tokens"], errors="coerce").fillna(0)
+    df["cached_input_tokens"] = pd.to_numeric(df.get("cached_input_tokens", 0), errors="coerce").fillna(0)
+    df["reasoning_tokens"] = pd.to_numeric(df.get("reasoning_tokens", 0), errors="coerce").fillna(0)
     df["total_tokens"] = df["input_tokens"] + df["output_tokens"]
 
-    df["estimated_cost_usd"] = df.apply(_estimate_row_cost_usd, axis=1)
+    # Build observed reasoning ratios from rows where the API reported them,
+    # so rows where reasoning_tokens==0 can use the observed ratio instead of
+    # the static 70% fallback.
+    reasoning_tracker = ReasoningRatioTracker.from_dataframe(df)
+
+    df["estimated_cost_usd"] = df.apply(
+        _estimate_row_cost_usd, axis=1, reasoning_tracker=reasoning_tracker,
+    )
     df["cost_usd"] = _reconcile_daily_model_cost(df, cost_df)
     df["currency"] = "usd"
 
@@ -165,6 +176,8 @@ def build_openai_unified_df(usage_df: pd.DataFrame, cost_df: pd.DataFrame) -> pd
             "calls",
             "input_tokens",
             "output_tokens",
+            "cached_input_tokens",
+            "reasoning_tokens",
             "total_tokens",
             "cost_usd",
             "currency",
@@ -174,8 +187,45 @@ def build_openai_unified_df(usage_df: pd.DataFrame, cost_df: pd.DataFrame) -> pd
 
 
 
-def _estimate_row_cost_usd(row: pd.Series) -> float:
+def _estimate_row_cost_usd(
+    row: pd.Series,
+    reasoning_tracker: ReasoningRatioTracker | None = None,
+) -> float:
     model_key = str(row.get("model", "")).lower()
+    registry = get_pricing_registry()
+    entry = registry.lookup("openai", model_key)
+
+    if entry:
+        p = entry.pricing
+        raw_input = float(row.get("input_tokens", 0))
+        raw_output = float(row.get("output_tokens", 0))
+        raw_cached = float(row.get("cached_input_tokens", 0))
+        raw_reasoning = float(row.get("reasoning_tokens", 0))
+
+        # When reasoning_tokens is 0 but this is a reasoning model, estimate
+        # from the observed ratio (dynamic) or the static fallback.
+        if raw_reasoning == 0 and raw_output > 0 and _is_reasoning_model("openai", model_key):
+            ratio = _FALLBACK_REASONING_RATIO
+            if reasoning_tracker is not None:
+                observed = reasoning_tracker.get_ratio(model_key)
+                if observed is not None:
+                    ratio = observed.ratio
+            raw_reasoning = raw_output * ratio
+            raw_output = raw_output * (1.0 - ratio)
+
+        effective_input = max(0.0, raw_input - raw_cached)
+        cached_rate = p.cached_input if p.cached_input is not None else p.input
+        reasoning_rate = p.reasoning_output if p.reasoning_output is not None else p.output
+
+        effective_output = max(0.0, raw_output - raw_reasoning) if raw_reasoning > 0 else raw_output
+
+        return (
+            (effective_input / 1_000_000) * p.input
+            + (raw_cached / 1_000_000) * cached_rate
+            + (effective_output / 1_000_000) * p.output
+            + (raw_reasoning / 1_000_000) * reasoning_rate
+        )
+
     pricing = MODEL_PRICING_PER_MILLION.get(model_key)
     if not pricing:
         return 0.0

@@ -71,6 +71,23 @@ from src.model_intelligence import (
     recommend_migration,
 )
 from src.model_advisor import build_usage_workload_profile, run_ai_model_advisor
+from src.cost_engine import (
+    build_workload_profile,
+    run_scenario_modeling,
+)
+from src.recommendation_engine import (
+    RankingWeights,
+    compute_recommendation_confidence,
+    find_cost_optimized_model,
+    run_recommendation_engine,
+)
+from src.pricing_registry import get_pricing_registry, set_pricing_registry
+from src.dynamic_pricing import build_dynamic_registry, PricingSource
+from src.conversion_engine import (
+    estimate_converted_workload,
+    compute_conversion_factors,
+    convert_workload_across_models,
+)
 from src.providers import (
     AnthropicProviderAdapter,
     AzureOpenAIProviderAdapter,
@@ -86,6 +103,18 @@ from src.ui import (
     render_limitations,
     render_sidebar,
 )
+
+
+def _init_dynamic_pricing() -> PricingSource:
+    """Initialize the pricing registry from remote/YAML sources (once per session)."""
+    if "pricing_source" in st.session_state:
+        return st.session_state["pricing_source"]
+
+    with st.spinner("Fetching latest model pricing..."):
+        registry, source = build_dynamic_registry(ttl_hours=24)
+        set_pricing_registry(registry, source=source.source)
+        st.session_state["pricing_source"] = source
+    return source
 
 
 @st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
@@ -865,6 +894,393 @@ def render_forecasts_tab(usage_df: pd.DataFrame, cost_df: pd.DataFrame) -> None:
 
 
 
+def _render_whatif_conversion(
+    unified_df: pd.DataFrame,
+    profile: "WorkloadProfile",
+    filter_provider: str | None,
+    filter_model: str | None,
+    registry: "PricingRegistry",
+) -> None:
+    """Render the What-If Model Conversion section in the Cost Optimization tab."""
+    st.markdown("### What-If Model Conversion")
+    st.caption(
+        "Select a target model to see how your **actual workload** would convert — "
+        "accounting for tokenizer differences, output behavior, reasoning overhead, "
+        "and quality gaps. This is more accurate than naive token-count transfer."
+    )
+
+    all_entries = registry.all_entries()
+    model_options = [f"{e.provider}/{e.model_id}" for e in all_entries]
+
+    selected_target = st.selectbox(
+        "Convert workload to:",
+        options=model_options,
+        index=0,
+        key="whatif_target_model",
+    )
+
+    if not selected_target or "/" not in selected_target:
+        return
+
+    target_provider, target_model = selected_target.split("/", 1)
+
+    observed_ratio: float | None = None
+    if profile.reasoning_tracker is not None:
+        ratio_info = profile.reasoning_tracker.get_ratio(profile.source_model)
+        if ratio_info is not None:
+            observed_ratio = ratio_info.ratio
+
+    converted = estimate_converted_workload(
+        profile.source_provider,
+        profile.source_model,
+        target_provider,
+        target_model,
+        avg_input_tokens=profile.avg_input_tokens_per_call,
+        avg_output_tokens=profile.avg_output_tokens_per_call,
+        avg_reasoning_tokens=profile.avg_reasoning_tokens_per_call,
+        total_calls=profile.total_calls,
+        monthly_calls=profile.monthly_calls,
+        source_monthly_cost=profile.observed_monthly_cost,
+        cached_ratio=profile.avg_cached_ratio,
+        observed_reasoning_ratio=observed_ratio,
+        registry=registry,
+    )
+
+    factors = converted.conversion_factors
+
+    # Summary KPIs
+    wc1, wc2, wc3, wc4 = st.columns(4)
+    wc1.metric(
+        "Converted Monthly Cost",
+        f"${converted.est_monthly_cost:,.2f}",
+        delta=f"${-converted.savings_usd:,.2f}",
+        delta_color="inverse",
+    )
+    wc2.metric(
+        "Savings",
+        f"{converted.savings_pct:+.1f}%",
+    )
+    wc3.metric("Cost/Request", f"${converted.est_cost_per_call:.6f}")
+    wc4.metric("Conversion Confidence", f"{converted.conversion_confidence:.0%}")
+
+    # Token conversion breakdown
+    st.markdown("#### Token Conversion Breakdown")
+    conversion_data = {
+        "Metric": [
+            "Input Tokens/Call",
+            "Output Tokens/Call (visible)",
+            "Reasoning Tokens/Call",
+            "Total Billed Tokens/Call",
+            "Effective Monthly Calls",
+        ],
+        f"Source ({profile.source_model})": [
+            f"{profile.avg_input_tokens_per_call:,.0f}",
+            f"{profile.avg_output_tokens_per_call:,.0f}",
+            f"{profile.avg_reasoning_tokens_per_call:,.0f}",
+            f"{profile.avg_input_tokens_per_call + profile.avg_output_tokens_per_call + profile.avg_reasoning_tokens_per_call:,.0f}",
+            f"{profile.monthly_calls:,.0f}",
+        ],
+        f"Target ({target_model})": [
+            f"{converted.est_input_tokens_per_call:,.0f}",
+            f"{converted.est_output_tokens_per_call:,.0f}",
+            f"{converted.est_reasoning_tokens_per_call:,.0f}",
+            f"{converted.est_total_tokens_per_call:,.0f}",
+            f"{converted.effective_calls:,.0f}",
+        ],
+        "Adjustment": [
+            f"×{factors.input_token_ratio:.3f} (tokenizer)",
+            f"×{factors.output_token_ratio:.3f} (output behavior)",
+            f"{factors.reasoning_overhead:.0%} overhead" if factors.reasoning_overhead > 0 else "N/A",
+            "",
+            f"×{factors.quality_adjustment:.2f} (quality adj.)" if factors.quality_adjustment > 1.01 else "1:1",
+        ],
+    }
+    st.dataframe(pd.DataFrame(conversion_data), use_container_width=True, hide_index=True)
+
+    # Conversion factors detail
+    with st.expander("Conversion Assumptions & Sources", expanded=False):
+        for assumption in factors.assumptions:
+            st.write(f"- {assumption}")
+        st.caption(
+            "These conversion factors are derived from tokenizer analysis, "
+            "model output behavior research, and quality benchmark comparisons. "
+            f"Overall confidence: **{factors.overall_confidence:.0%}**"
+        )
+
+
+def render_cost_optimization_tab(unified_df: pd.DataFrame) -> None:
+    """Render the Cost Optimization tab with scenario modeling and recommendations."""
+    st.subheader("Cost Optimization & Cross-Provider Analysis")
+    st.caption(
+        "Compare your current workload cost across all registered models and providers. "
+        "Uses provider-specific token normalization (reasoning tokens for o3/o4, cached tokens, etc.)."
+    )
+
+    if unified_df.empty:
+        st.info("No provider usage data available. Connect at least one provider to run cost analysis.")
+        return
+
+    registry = get_pricing_registry()
+    registry_info = registry.summary()
+
+    # Pricing registry status
+    data_source = registry_info.get("data_source", "hardcoded")
+    source_labels = {
+        "litellm_remote": "LiteLLM (Live)",
+        "litellm_cache": "LiteLLM (Cached)",
+        "yaml": "Local YAML",
+        "hardcoded": "Hardcoded Defaults",
+    }
+    with st.expander("Pricing Registry Status", expanded=False):
+        ri1, ri2, ri3, ri4, ri5 = st.columns(5)
+        ri1.metric("Data Source", source_labels.get(data_source, data_source))
+        ri2.metric("Pricing Version", str(registry_info["pricing_version"]))
+        ri3.metric("Registered Models", str(registry_info["total_models"]))
+        ri4.metric("Freshness (days)", str(registry_info["freshness_days"]))
+        ri5.metric("Status", "Fresh" if not registry_info["is_stale"] else "Stale (>30d)")
+        if data_source in ("litellm_remote", "litellm_cache"):
+            st.success(
+                "Pricing is sourced **dynamically** from the LiteLLM community pricing index "
+                "(2,500+ models, updated within hours of provider price changes)."
+            )
+        elif data_source == "yaml":
+            st.info(
+                "Pricing loaded from `data/pricing.yaml`. Edit this file to update pricing "
+                "without code changes. Enable network access for live LiteLLM pricing."
+            )
+        if registry_info["is_stale"]:
+            st.warning(
+                "Pricing data is more than 30 days old. Click the button below to refresh, "
+                "or update `data/pricing.yaml`."
+            )
+        if st.button("Force Refresh Pricing", key="force_refresh_pricing"):
+            if "pricing_source" in st.session_state:
+                del st.session_state["pricing_source"]
+            st.rerun()
+
+    # Source selection
+    st.markdown("### Workload Source")
+    available_providers = sorted(unified_df["provider"].dropna().astype(str).unique().tolist())
+    available_models = sorted(unified_df["model"].dropna().astype(str).unique().tolist())
+
+    sp1, sp2 = st.columns(2)
+    source_provider = sp1.selectbox(
+        "Source Provider",
+        options=["All Providers"] + available_providers,
+        index=0,
+        key="cost_opt_provider",
+    )
+    source_model = sp2.selectbox(
+        "Source Model",
+        options=["All Models"] + available_models,
+        index=0,
+        key="cost_opt_model",
+    )
+
+    filter_provider = source_provider if source_provider != "All Providers" else None
+    filter_model = source_model if source_model != "All Models" else None
+
+    # Build workload profile
+    profile = build_workload_profile(unified_df, provider=filter_provider, model=filter_model)
+
+    if profile.total_calls <= 0:
+        st.info("No request volume detected for the selected filter. Select a different source.")
+        return
+
+    # Workload KPIs
+    st.markdown("### Observed Workload Profile")
+    wp1, wp2, wp3, wp4, wp5 = st.columns(5)
+    wp1.metric("Total Calls", f"{int(profile.total_calls):,}")
+    wp2.metric("Avg Input Tokens/Call", f"{profile.avg_input_tokens_per_call:,.0f}")
+    wp3.metric("Avg Output Tokens/Call", f"{profile.avg_output_tokens_per_call:,.0f}")
+    wp4.metric("Monthly Calls (Est.)", f"{int(profile.monthly_calls):,}")
+    wp5.metric("Monthly Cost (Obs.)", f"${profile.observed_monthly_cost:,.2f}")
+
+    if profile.avg_reasoning_tokens_per_call > 0:
+        st.info(
+            f"Reasoning tokens detected: avg {profile.avg_reasoning_tokens_per_call:,.0f}/call. "
+            f"Cost engine applies o-series-specific token pricing."
+        )
+    if profile.avg_cached_ratio > 0.01:
+        st.info(f"Prompt cache ratio: {profile.avg_cached_ratio:.1%} of input tokens served from cache.")
+
+    tracker = profile.reasoning_tracker
+    if tracker is not None and not tracker.is_empty:
+        with st.expander("Observed Reasoning Token Ratios (Dynamic)", expanded=False):
+            st.markdown(
+                "Computed from **live API data** — rows where the provider reported "
+                "`reasoning_tokens > 0`. These ratios replace the static 70% default "
+                "for rows where reasoning tokens were not explicitly reported."
+            )
+            ratio_rows = tracker.summary()
+            st.dataframe(pd.DataFrame(ratio_rows), use_container_width=True, hide_index=True)
+
+    # Ranking weights
+    st.markdown("### Ranking Configuration")
+    wc1, wc2, wc3, wc4 = st.columns(4)
+    w_cost = wc1.slider("Cost Weight", 0.0, 1.0, 0.35, 0.05, key="w_cost")
+    w_latency = wc2.slider("Latency Weight", 0.0, 1.0, 0.20, 0.05, key="w_latency")
+    w_context = wc3.slider("Context Window Weight", 0.0, 1.0, 0.15, 0.05, key="w_context")
+    w_quality = wc4.slider("Quality Weight", 0.0, 1.0, 0.30, 0.05, key="w_quality")
+
+    weights = RankingWeights(cost=w_cost, latency=w_latency, context_window=w_context, quality_score=w_quality)
+
+    target_providers = st.multiselect(
+        "Target Providers to Compare",
+        options=["openai", "anthropic", "groq"],
+        default=["openai", "anthropic", "groq"],
+        key="cost_opt_targets",
+    )
+    if not target_providers:
+        st.warning("Select at least one target provider.")
+        return
+
+    # Run recommendation engine
+    result = run_recommendation_engine(
+        unified_df,
+        source_provider=filter_provider,
+        source_model=filter_model,
+        target_providers=tuple(target_providers),
+        weights=weights,
+        top_n=20,
+    )
+
+    # Confidence indicator (AC-4.3)
+    st.markdown("### Recommendation Confidence")
+    conf = result.confidence
+    cc1, cc2, cc3, cc4 = st.columns(4)
+    cc1.metric("Overall Confidence", f"{conf.overall:.0f}%")
+    cc2.metric("Data Completeness", f"{conf.data_completeness:.0f}%")
+    cc3.metric("Pricing Freshness", f"{conf.pricing_freshness:.0f}%")
+    cc4.metric("Token Certainty", f"{conf.token_conversion_certainty:.0f}%")
+    if conf.reasoning:
+        st.caption(f"Confidence factors: {conf.reasoning}")
+
+    # Primary recommendation (AC-4.1)
+    if result.primary and result.primary.scenario:
+        st.markdown("### Primary Recommendation")
+        pr = result.primary
+        sc = pr.scenario
+        pr1, pr2, pr3, pr4, pr5 = st.columns(5)
+        pr1.metric("Recommended Model", pr.model_id)
+        pr2.metric("Provider", pr.provider.title())
+        pr3.metric("Monthly Cost", f"${sc.projected_monthly_cost:,.2f}")
+        pr4.metric("Savings/Month", f"${sc.savings_vs_current_usd:,.2f}")
+        pr5.metric("Savings (%)", f"{sc.savings_vs_current_pct:+.1f}%")
+
+        if pr.recommendation_reason:
+            st.info(pr.recommendation_reason)
+
+        # Scenario detail (AC-3.3)
+        st.markdown("#### Scenario Detail")
+        sd1, sd2, sd3, sd4 = st.columns(4)
+        sd1.metric("Cost / Request", f"${sc.cost_per_request:.6f}")
+        sd2.metric("Cost / 1K Tokens", f"${sc.cost_per_1k_tokens:.6f}")
+        sd3.metric("Context Window", f"{sc.context_window:,}")
+        sd4.metric(
+            "Break-Even Calls",
+            f"{sc.break_even_calls:,.0f}" if sc.break_even_calls else "N/A",
+        )
+
+        if sc.assumptions:
+            with st.expander("Assumptions", expanded=False):
+                for assumption in sc.assumptions:
+                    st.write(f"- {assumption}")
+
+    # Cost-optimized pick (AC-4.1)
+    cost_opt = find_cost_optimized_model(
+        profile,
+        target_providers=tuple(target_providers),
+        min_quality_score=0.5,
+        registry=registry,
+    )
+    if cost_opt and cost_opt.scenario:
+        st.markdown("### Most Cost-Efficient Alternative")
+        co1, co2, co3, co4 = st.columns(4)
+        co1.metric("Model", cost_opt.model_id)
+        co2.metric("Provider", cost_opt.provider.title())
+        co3.metric("Monthly Cost", f"${cost_opt.scenario.projected_monthly_cost:,.2f}")
+        co4.metric("Savings (%)", f"{cost_opt.scenario.savings_vs_current_pct:+.1f}%")
+        if cost_opt.recommendation_reason:
+            st.caption(cost_opt.recommendation_reason)
+
+    # Full ranked table (AC-4.2)
+    st.markdown("### Multi-Factor Model Ranking")
+    st.caption(
+        f"Weights: Cost={w_cost:.0%}, Latency={w_latency:.0%}, "
+        f"Context={w_context:.0%}, Quality={w_quality:.0%}"
+    )
+
+    if not result.ranked_df.empty:
+        st.dataframe(result.ranked_df, width="stretch", hide_index=True)
+    else:
+        st.info("No ranked models available for the selected filters.")
+
+    # What-If Model Conversion
+    _render_whatif_conversion(unified_df, profile, filter_provider, filter_model, registry)
+
+    # Scenario modeling comparison (AC-3.3)
+    st.markdown("### Cross-Provider Cost Comparison")
+    scenario_result = run_scenario_modeling(
+        unified_df,
+        source_provider=filter_provider,
+        source_model=filter_model,
+        target_providers=tuple(target_providers),
+        registry=registry,
+        top_n=20,
+    )
+
+    if not scenario_result.comparison_df.empty:
+        comparison_display = scenario_result.comparison_df.copy()
+        display_cols = [
+            "provider",
+            "model_id",
+            "family",
+            "projected_monthly_cost",
+            "cost_per_request",
+            "cost_per_1k_tokens",
+            "savings_vs_current_usd",
+            "savings_vs_current_pct",
+            "break_even_calls",
+            "conversion_certainty",
+            "context_window",
+            "supports_reasoning",
+        ]
+        available_cols = [c for c in display_cols if c in comparison_display.columns]
+        rename_map = {
+            "provider": "Provider",
+            "model_id": "Model",
+            "family": "Family",
+            "projected_monthly_cost": "Monthly Cost (USD)",
+            "cost_per_request": "Cost/Request (USD)",
+            "cost_per_1k_tokens": "Cost/1K Tokens",
+            "savings_vs_current_usd": "Savings (USD/mo)",
+            "savings_vs_current_pct": "Savings (%)",
+            "break_even_calls": "Break-Even Calls",
+            "conversion_certainty": "Certainty",
+            "context_window": "Context Window",
+            "supports_reasoning": "Reasoning Support",
+        }
+        st.dataframe(
+            comparison_display[available_cols].rename(columns=rename_map),
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.info("No comparison data available.")
+
+    # Export
+    st.markdown("### Export")
+    if not result.ranked_df.empty:
+        csv_data = result.ranked_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Download Ranking CSV",
+            data=csv_data,
+            file_name="cost_optimization_ranking.csv",
+            mime="text/csv",
+        )
+
+
 def render_future_roadmap_tab() -> None:
     st.subheader("Future Roadmap")
     st.markdown(
@@ -898,6 +1314,8 @@ def main() -> None:
     st.set_page_config(page_title="LLM Cost Analysis Module", layout="wide")
     apply_app_styles()
     render_header()
+
+    pricing_source = _init_dynamic_pricing()
 
     default_openai_key = st.session_state.get("openai_admin_key") or os.getenv(ENV_OPENAI_ADMIN_KEY, "")
     default_anthropic_key = os.getenv(ENV_ANTHROPIC_ADMIN_KEY, "")
@@ -1006,9 +1424,9 @@ def main() -> None:
             "Capacity & Limits",
             "Model Intelligence",
             "AI Model Advisor",
+            "Cost Optimization",
             "Usage Explorer",
             "Forecasts (beta)",
-            # "Future Roadmap",
         ]
     )
     with tabs[0]:
@@ -1030,14 +1448,14 @@ def main() -> None:
     with tabs[4]:
         render_ai_model_advisor_tab(unified_df)
     with tabs[5]:
-        render_usage_explorer_tab(aux_usage_frames)
+        render_cost_optimization_tab(unified_df)
     with tabs[6]:
+        render_usage_explorer_tab(aux_usage_frames)
+    with tabs[7]:
         if usage_df.empty and cost_df.empty:
             st.info("Forecasts currently run on OpenAI usage/cost series.")
         else:
             render_forecasts_tab(usage_df, cost_df)
-    # with tabs[4]:
-    #     render_future_roadmap_tab()
 
 
 if __name__ == "__main__":
